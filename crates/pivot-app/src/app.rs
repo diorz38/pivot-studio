@@ -9,6 +9,7 @@ pub struct PivotApp {
     pub status: String,
     brightness_applied: Option<Brightness>,
     exit_requested: bool,
+    pub on_home: bool,
 }
 
 impl PivotApp {
@@ -18,9 +19,10 @@ impl PivotApp {
         apply(&cc.egui_ctx, &tokens);
         Self {
             brightness,
-            status: "Ready. Phase 0 shell - import data and pivot features arrive in later phases.".to_string(),
+            status: "Home - open a saved project or import data to start.".to_string(),
             brightness_applied: Some(brightness),
             exit_requested: false,
+            on_home: true,
         }
     }
 
@@ -34,8 +36,31 @@ impl PivotApp {
 
     pub fn dispatch(&mut self, id: &str, params: &Value, ctx: &egui::Context) {
         match id {
-            "app.exit" => {
+            "app.exit" | "window.close" => {
                 self.exit_requested = true;
+            }
+            "window.minimize" => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            }
+            "window.maximize" => {
+                let on = params
+                    .get("on")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| !ctx.input(|i| i.viewport().maximized.unwrap_or(false)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(on));
+            }
+            "nav.home" => {
+                self.on_home = true;
+                self.status = "Home - open a saved project or import data to start.".to_string();
+            }
+            "nav.worksheet" => {
+                self.on_home = false;
+                self.status = "Worksheet (Phase 0 placeholder) - data/pivot features arrive in later phases.".to_string();
+            }
+            "file.open" | "file.import" | "data.connect" => {
+                // Phase 0 placeholder: real open/import/connect arrives in later phases.
+                self.on_home = false;
+                self.status = format!("'{id}' is a placeholder (Phase 1+). Showing worksheet view.");
             }
             "view.brightness" => {
                 if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
@@ -62,7 +87,7 @@ impl PivotApp {
         }
     }
 
-    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+    pub fn menu_bar(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         egui::menu::bar(ui, |ui| {
             for (title, items) in menus::menu_tree() {
@@ -126,13 +151,6 @@ impl eframe::App for PivotApp {
             .frame(egui::Frame::new().fill(t.app_bar))
             .show(ctx, |ui| {
                 chrome::app_bar(self, ui);
-                egui::Frame::new()
-                    .fill(t.panel)
-                    .stroke(egui::Stroke::new(1.0_f32, t.divider))
-                    .inner_margin(egui::Margin::symmetric(6, 0))
-                    .show(ui, |ui| {
-                        self.menu_bar(ui);
-                    });
             });
 
         egui::TopBottomPanel::bottom("status_bar")

@@ -42,6 +42,7 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
                 cmd("Open Workspace...", "file.open"),
                 Item::Sep,
                 cmd("Import Data...", "file.import"),
+                cmd("Connect Database...", "data.connect"),
                 Item::Sep,
                 cmd("Export...", "file.export"),
                 Item::Sep,
@@ -81,6 +82,9 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
         (
             "View",
             vec![
+                cmd("Home", "nav.home"),
+                cmd("Worksheet", "nav.worksheet"),
+                Item::Sep,
                 Item::Sub(
                     "Brightness".to_string(),
                     vec![
