@@ -146,6 +146,8 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
             ui.horizontal(|ui| {
                 let status = if let Some(load) = &app.loading {
                     load.progress.clone()
+                } else if app.pivot_computing.is_some() {
+                    "Computing pivot...".to_string()
                 } else {
                     app.status.clone()
                 };
@@ -155,6 +157,13 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                     ui.spinner();
                     if ui.small_button("Cancel").clicked() {
                         app.cancel_load();
+                    }
+                }
+                if app.pivot_computing.is_some() {
+                    ui.add_space(8.0);
+                    ui.spinner();
+                    if ui.small_button("Cancel pivot").clicked() {
+                        app.cancel_pivot();
                     }
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

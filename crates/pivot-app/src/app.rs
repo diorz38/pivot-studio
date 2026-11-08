@@ -1,7 +1,11 @@
-//! Application state and egui frame/update (DesignCraft `app.rs`/`DesignApp` pattern, simplified).
+//! Application state and egui frame/update (DesignCraft pattern, simplified).
 
 use crate::{chrome, dock, menus};
-use pivot_core::{DataTable, DataType};
+use pivot_core::pivot::compute;
+use pivot_core::{
+    Aggregate, DataTable, DataType, FieldRef, PivotSpec, SubtotalConfig, ThemedTableModel,
+    ValueField,
+};
 use pivot_data::FileKind;
 use pivot_theme::{apply, Brightness, Tokens};
 use serde_json::Value;
@@ -27,6 +31,15 @@ pub struct LoadState {
     pub cancel: Arc<AtomicBool>,
 }
 
+pub enum PivotMsg {
+    Done(Result<ThemedTableModel, String>),
+}
+
+pub struct PivotComputeState {
+    pub rx: Receiver<PivotMsg>,
+    pub cancel: Arc<AtomicBool>,
+}
+
 pub struct PivotApp {
     pub brightness: Brightness,
     pub status: String,
@@ -36,6 +49,9 @@ pub struct PivotApp {
     pub table: Option<DataTable>,
     pub source_name: Option<String>,
     pub loading: Option<LoadState>,
+    pub pivot_spec: PivotSpec,
+    pub pivot_model: Option<ThemedTableModel>,
+    pub pivot_computing: Option<PivotComputeState>,
 }
 
 impl PivotApp {
@@ -52,6 +68,15 @@ impl PivotApp {
             table: None,
             source_name: None,
             loading: None,
+            pivot_spec: PivotSpec {
+                subtotals: SubtotalConfig {
+                    row_subtotals: true,
+                    grand_total: true,
+                },
+                ..Default::default()
+            },
+            pivot_model: None,
+            pivot_computing: None,
         }
     }
 
@@ -92,17 +117,49 @@ impl PivotApp {
             match res {
                 Ok(loaded) => {
                     self.status = format!(
-                        "Loaded '{}' ({} rows, {} cols).",
+                        "Loaded '{}' ({} rows, {} cols). Assign fields to build a pivot.",
                         loaded.name,
                         loaded.table.row_count(),
                         loaded.table.column_count()
                     );
                     self.source_name = Some(loaded.name);
                     self.table = Some(loaded.table);
+                    self.pivot_model = None;
                     self.on_home = false;
                 }
                 Err(e) => {
                     self.status = format!("Load failed: {e}");
+                }
+            }
+            ctx.request_repaint();
+        }
+    }
+
+    pub fn poll_pivot(&mut self, ctx: &egui::Context) {
+        let mut finished: Option<Result<ThemedTableModel, String>> = None;
+        if let Some(state) = &mut self.pivot_computing {
+            while let Ok(msg) = state.rx.try_recv() {
+                match msg {
+                    PivotMsg::Done(res) => {
+                        finished = Some(res);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(res) = finished {
+            self.pivot_computing = None;
+            match res {
+                Ok(model) => {
+                    self.status = format!(
+                        "Pivot updated: {} body row(s), {} footer band(s).",
+                        model.body_rows.len(),
+                        model.footer_bands.len()
+                    );
+                    self.pivot_model = Some(model);
+                }
+                Err(e) => {
+                    self.status = format!("Pivot compute failed: {e}");
                 }
             }
             ctx.request_repaint();
@@ -128,7 +185,6 @@ impl PivotApp {
             progress: self.status.clone(),
             cancel,
         });
-        let ctx = None::<egui::Context>; // repaint driven by poll via request_repaint_after
         thread::spawn(move || {
             let _ = tx.send(LoadMsg::Progress(format!("Reading {name}...")));
             if cancel_flag.load(Ordering::Relaxed) {
@@ -155,7 +211,6 @@ impl PivotApp {
                     let _ = tx.send(LoadMsg::Done(Err(e.to_string())));
                 }
             }
-            let _ = ctx; // silence
         });
     }
 
@@ -184,17 +239,86 @@ impl PivotApp {
         }
     }
 
+    pub fn cancel_pivot(&mut self) {
+        if let Some(state) = &self.pivot_computing {
+            state.cancel.store(true, Ordering::Relaxed);
+            self.status = "Cancelling pivot...".to_string();
+        }
+    }
+
     pub fn reinterpret_column(&mut self, col_idx: usize, target: DataType) {
         if let Some(table) = &mut self.table {
             if let Some(col) = table.columns.get_mut(col_idx) {
                 col.override_type = Some(target);
             }
             table.reinterpret_column(col_idx);
-            self.status = format!(
-                "Column type updated ({} rows).",
-                table.row_count()
-            );
+            self.pivot_model = None;
+            self.status = format!("Column type updated ({} rows). Recompute pivot if needed.", table.row_count());
         }
+    }
+
+    pub fn request_pivot_recompute(&mut self) {
+        let Some(table) = self.table.clone() else {
+            self.status = "Load data before computing a pivot.".to_string();
+            return;
+        };
+        if self.pivot_computing.is_some() {
+            self.status = "Pivot computation already in progress.".to_string();
+            return;
+        }
+        if self.pivot_spec.values.is_empty() {
+            self.status = "Add at least one Values field (with aggregate) to compute a pivot.".to_string();
+            self.pivot_model = None;
+            return;
+        }
+        let spec = self.pivot_spec.clone();
+        let (tx, rx) = mpsc::channel::<PivotMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        self.status = "Computing pivot...".to_string();
+        self.pivot_computing = Some(PivotComputeState { rx, cancel });
+        thread::spawn(move || {
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(PivotMsg::Done(Err("Cancelled.".to_string())));
+                return;
+            }
+            // compute is synchronous/pure; offload to keep UI responsive on large tables.
+            let model = compute(&table, &spec);
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(PivotMsg::Done(Err("Cancelled.".to_string())));
+                return;
+            }
+            let _ = tx.send(PivotMsg::Done(Ok(model)));
+        });
+    }
+
+    pub fn add_row_field(&mut self, name: String) {
+        if !self.pivot_spec.rows.iter().any(|f| f.name == name) {
+            self.pivot_spec.rows.push(FieldRef::new(name));
+            self.request_pivot_recompute();
+        }
+    }
+    pub fn add_col_field(&mut self, name: String) {
+        if !self.pivot_spec.columns.iter().any(|f| f.name == name) {
+            self.pivot_spec.columns.push(FieldRef::new(name));
+            self.request_pivot_recompute();
+        }
+    }
+    pub fn add_value_field(&mut self, name: String, aggregate: Aggregate) {
+        self.pivot_spec.values.push(ValueField {
+            field: FieldRef::new(name),
+            aggregate,
+            display_name: None,
+        });
+        self.request_pivot_recompute();
+    }
+    pub fn clear_layout(&mut self) {
+        self.pivot_spec.rows.clear();
+        self.pivot_spec.columns.clear();
+        self.pivot_spec.values.clear();
+        self.pivot_spec.filters.clear();
+        self.pivot_model = None;
+        self.status = "Pivot layout cleared.".to_string();
     }
 
     pub fn dispatch(&mut self, id: &str, params: &Value, ctx: &egui::Context) {
@@ -221,14 +345,10 @@ impl PivotApp {
                 self.status = if let Some(name) = &self.source_name {
                     format!("Worksheet - {name} ({} rows, {} cols).", self.row_count(), self.col_count())
                 } else {
-                    "Worksheet - import data to populate fields (Phase 1).".to_string()
+                    "Worksheet - import data to populate fields (Phase 2).".to_string()
                 };
             }
-            "file.import" => {
-                // Generic import defaults to CSV picker; home cards dispatch specific kinds.
-                self.pick_and_load(FileKind::Csv);
-            }
-            "file.import.csv" => self.pick_and_load(FileKind::Csv),
+            "file.import" | "file.import.csv" => self.pick_and_load(FileKind::Csv),
             "file.import.xlsx" => self.pick_and_load(FileKind::Xlsx),
             "file.import.dbf" => self.pick_and_load(FileKind::Dbf),
             "file.open" => {
@@ -240,6 +360,8 @@ impl PivotApp {
                 self.status = "Database connectors are a placeholder (Phase 5).".to_string();
             }
             "data.cancel_load" => self.cancel_load(),
+            "pivot.recompute" => self.request_pivot_recompute(),
+            "pivot.clear" => self.clear_layout(),
             "view.brightness" => {
                 if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
                     if let Some(b) = Brightness::parse(mode) {
@@ -254,13 +376,13 @@ impl PivotApp {
                 }
             }
             "view.reset_layout" => {
-                self.status = "Layout reset (placeholder; panel state reset in a future phase).".to_string();
+                self.status = "Layout reset (placeholder).".to_string();
             }
             "help.about" => {
-                self.status = "Pivot Studio (Phase 1) - data ingest foundation. See PIVOT_STUDIO_PLAN.md.".to_string();
+                self.status = "Pivot Studio (Phase 2) - pivot engine + themed model foundation. See PIVOT_STUDIO_PLAN.md.".to_string();
             }
             _ => {
-                self.status = format!("Command '{id}' is a placeholder (not implemented in Phase 1).");
+                self.status = format!("Command '{id}' is a placeholder.");
             }
         }
     }
@@ -279,9 +401,7 @@ impl PivotApp {
     fn render_menu_items(ui: &mut egui::Ui, items: &[menus::Item], ctx: &egui::Context, app: &mut PivotApp) {
         for item in items {
             match item {
-                menus::Item::Sep => {
-                    ui.separator();
-                }
+                menus::Item::Sep => { ui.separator(); }
                 menus::Item::Sub(label, children) => {
                     ui.menu_button(label, |ui| {
                         Self::render_menu_items(ui, children, ctx, app);
@@ -320,7 +440,8 @@ impl eframe::App for PivotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_theme(ctx);
         self.poll_loading(ctx);
-        if self.loading.is_some() {
+        self.poll_pivot(ctx);
+        if self.loading.is_some() || self.pivot_computing.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.exit_requested {
