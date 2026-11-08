@@ -2,53 +2,10 @@
 //! Home page: open/import/connect. Worksheet: field wells, pivot grid (ThemedTableModel), data preview.
 
 use crate::app::PivotApp;
-use egui::{Id, RichText, Sense, Vec2};
+use egui::{RichText, Sense, Vec2};
 use pivot_core::{Aggregate, DataType, FilterOp, FooterBandSpec, ThemedTableModel, Value as CoreValue};
 use pivot_theme::Tokens;
 use serde_json::Value;
-
-#[derive(Clone, Debug)]
-struct FieldDrag {
-    name: String,
-    dtype: DataType,
-}
-
-fn drag_id() -> Id {
-    Id::new("pivot_field_drag")
-}
-
-fn begin_drag(ui: &egui::Ui, name: &str, dtype: DataType) {
-    ui.ctx().memory_mut(|m| m.data.insert_temp(drag_id(), FieldDrag { name: name.to_string(), dtype }));
-}
-
-fn current_drag(ui: &egui::Ui) -> Option<FieldDrag> {
-    ui.ctx().memory(|m| m.data.get_temp::<FieldDrag>(drag_id()))
-}
-
-fn clear_drag_if_released(ui: &egui::Ui) {
-    if ui.input(|i| i.pointer.any_released()) {
-        ui.ctx().memory_mut(|m| m.data.remove::<FieldDrag>(drag_id()));
-    }
-}
-
-fn drop_zone(ui: &mut egui::Ui, t: &Tokens, label: &str, hint: &str, body: impl FnOnce(&mut egui::Ui)) -> bool {
-    let dragging = current_drag(ui).is_some();
-    let fill = if dragging { t.hover } else { t.panel_alt };
-    let stroke_color = if dragging { t.accent } else { t.border };
-    let frame = egui::Frame::new()
-        .fill(fill)
-        .stroke(egui::Stroke::new(if dragging { 1.5_f32 } else { 1.0_f32 }, stroke_color))
-        .inner_margin(egui::Margin::same(6))
-        .corner_radius(4.0);
-    let resp = frame.show(ui, |ui| {
-        ui.label(RichText::new(label).strong().color(t.text_strong).size(12.0));
-        if dragging {
-            ui.label(RichText::new(format!("Drop field here to add to {hint}")).color(t.accent).size(11.0));
-        }
-        body(ui);
-    });
-    resp.response.hovered() && ui.input(|i| i.pointer.any_released()) && dragging
-}
 
 pub fn show(app: &mut PivotApp, ui: &mut egui::Ui) {
     if app.on_home {
@@ -205,10 +162,7 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                     .corner_radius(4.0)
                     .show(ui, |ui| {
                         ui.label(RichText::new("How to build a pivot").strong().color(t.text_strong).size(12.0));
-                        ui.label(RichText::new("1) +Row = group rows (e.g. Region)\n2) +Col = split columns (optional, e.g. Year)\n3) Add a Value = the number to calculate (required)\n   • Sum/Avg/Min/Max for numbers\n   • Count for any field").color(t.text_muted).size(11.0));
-                        if app.pivot_spec.values.is_empty() {
-                            ui.label(RichText::new("Tip: add at least one Value (e.g. Count) to show the pivot result.").color(t.accent).size(11.0));
-                        }
+                        ui.label(RichText::new("Use the Pivot Layout panel (right):\n1) Pick a column as Row (grouping) and its type, then Add\n2) Pick a column as Column (optional) and its type, then Add\n3) Pick a column as Value and calculation (Sum/Count/Avg...), then Add\nAt least one Value is required to show the pivot result.").color(t.text_muted).size(11.0));
                     });
                 ui.add_space(4.0);
             }
@@ -218,64 +172,25 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 ui.label(RichText::new("No dataset loaded.").color(t.text_disabled));
             } else {
                 egui::ScrollArea::vertical().id_salt("fields_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                    let mut add_row: Option<String> = None;
-                    let mut add_col: Option<String> = None;
-                    let mut add_val: Option<(String, Aggregate)> = None;
                     let mut type_change: Option<(usize, DataType)> = None;
                     for (i, (name, current)) in fields.iter().enumerate() {
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
-                                let drag_resp = ui.add(egui::Label::new(RichText::new(format!("☰ {name}")).strong().color(t.text_strong).size(12.0)).sense(Sense::click_and_drag()))
-                                    .on_hover_text("Drag to Rows, Columns, or Values on the right. Tip: drag to Values for Count (or Sum for numbers).");
-                                if drag_resp.drag_started() {
-                                    begin_drag(ui, name, *current);
-                                }
+                                ui.label(RichText::new(name).strong().color(t.text_strong).size(12.0));
                                 let mut effective = *current;
-                                egui::ComboBox::from_id_salt(("type", i)).selected_text(format!("{effective:?}")).width(78.0).show_ui(ui, |ui| {
+                                egui::ComboBox::from_id_salt(("type", i)).selected_text(format!("{effective:?}")).width(88.0).show_ui(ui, |ui| {
                                     for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] {
                                         ui.selectable_value(&mut effective, dt, format!("{dt:?}"));
                                     }
                                 });
                                 if effective != *current { type_change = Some((i, effective)); }
                             });
-                            ui.label(RichText::new("Quick add (or drag ☰ to layout)").color(t.text_muted).size(10.0));
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.small_button("+ Row").on_hover_text("Group rows by this field").clicked() { add_row = Some(name.clone()); }
-                                if ui.small_button("+ Column").on_hover_text("Split columns by this field (optional)").clicked() { add_col = Some(name.clone()); }
-                            });
-                            ui.horizontal_wrapped(|ui| {
-                                let numeric = matches!(current, DataType::Integer | DataType::Decimal);
-                                if numeric {
-                                    if ui.small_button("Sum").on_hover_text("Add Sum of this field as a pivot value").clicked() { add_val = Some((name.clone(), Aggregate::Sum)); }
-                                    if ui.small_button("Avg").on_hover_text("Average").clicked() { add_val = Some((name.clone(), Aggregate::Average)); }
-                                }
-                                if ui.small_button("Count").on_hover_text("Count rows (works for any field)").clicked() { add_val = Some((name.clone(), Aggregate::Count)); }
-                                if ui.small_button("Count distinct").on_hover_text("Count unique values").clicked() { add_val = Some((name.clone(), Aggregate::CountDistinct)); }
-                                if numeric {
-                                    if ui.small_button("Min").clicked() { add_val = Some((name.clone(), Aggregate::Min)); }
-                                    if ui.small_button("Max").clicked() { add_val = Some((name.clone(), Aggregate::Max)); }
-                                }
-                            });
+                            ui.label(RichText::new(format!("Type: {:?}", current)).color(t.text_muted).size(10.0));
                         });
                     }
                     if let Some((i, dt)) = type_change { app.reinterpret_column(i, dt); }
-                    if let Some(n) = add_row { app.add_row_field(n); }
-                    if let Some(n) = add_col { app.add_col_field(n); }
-                    if let Some((n, a)) = add_val { app.add_value_field(n, a); }
                 });
             }
-            if let Some(d) = current_drag(ui) {
-                if let Some(pos) = ui.ctx().pointer_hover_pos() {
-                    let text = format!("☰ {} -> drop on Rows/Columns/Values", d.name);
-                    egui::Area::new(Id::new("pivot_field_drag_ghost")).fixed_pos(pos + egui::vec2(12.0, 12.0)).order(egui::Order::Tooltip).interactable(false).show(ui.ctx(), |ui| {
-                        egui::Frame::popup(ui.style()).fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.accent)).inner_margin(egui::Margin::symmetric(8, 4)).show(ui, |ui| {
-                            ui.label(RichText::new(text).color(t.text_strong).size(12.0));
-                        });
-                    });
-                    ui.ctx().request_repaint();
-                }
-            }
-            clear_drag_if_released(ui);
         });
 
     egui::SidePanel::right("dock_right")
@@ -294,68 +209,16 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 }
             });
             ui.add_space(4.0);
-            ui.label(RichText::new("Drag fields (☰) from the left into Rows, Columns, or Values.").color(t.text_muted).size(11.0));
-            ui.add_space(4.0);
+            ui.label(RichText::new("Pick a data column, choose how to use it, then Add.").color(t.text_muted).size(11.0));
+            ui.add_space(6.0);
             egui::ScrollArea::vertical().id_salt("layout_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                let mut drop_row: Option<String> = None;
-                let mut drop_col: Option<String> = None;
-                let mut drop_val: Option<(String, DataType)> = None;
-
-                if drop_zone(ui, &t, "Rows", "Rows (grouping)", |ui| {
-                    let mut remove_row: Option<usize> = None;
-                    let mut move_row: Option<(usize, usize)> = None;
-                    let row_len = app.pivot_spec.rows.len();
-                    for (i, f) in app.pivot_spec.rows.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&f.name).color(t.text));
-                            if ui.small_button("x").on_hover_text("Remove from Rows").clicked() { remove_row = Some(i); }
-                            if i > 0 && ui.small_button("^").clicked() { move_row = Some((i, i - 1)); }
-                            if i + 1 < row_len && ui.small_button("v").clicked() { move_row = Some((i, i + 1)); }
-                        });
-                    }
-                    if row_len == 0 { ui.label(RichText::new("(drop a field here)").color(t.text_disabled)); }
-                    if let Some(i) = remove_row { app.remove_row_field(i); }
-                    else if let Some((a, b)) = move_row { app.move_row_field(a, b); }
-                }) { drop_row = current_drag(ui).map(|d| d.name); }
-
-                ui.add_space(6.0);
-                if drop_zone(ui, &t, "Columns", "Columns (optional split)", |ui| {
-                    let mut remove_col: Option<usize> = None;
-                    let mut move_col: Option<(usize, usize)> = None;
-                    let col_len = app.pivot_spec.columns.len();
-                    for (i, f) in app.pivot_spec.columns.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&f.name).color(t.text));
-                            if ui.small_button("x").on_hover_text("Remove from Columns").clicked() { remove_col = Some(i); }
-                            if i > 0 && ui.small_button("^").clicked() { move_col = Some((i, i - 1)); }
-                            if i + 1 < col_len && ui.small_button("v").clicked() { move_col = Some((i, i + 1)); }
-                        });
-                    }
-                    if col_len == 0 { ui.label(RichText::new("(drop a field here, optional)").color(t.text_disabled)); }
-                    if let Some(i) = remove_col { app.remove_col_field(i); }
-                    else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
-                }) { drop_col = current_drag(ui).map(|d| d.name); }
-
-                ui.add_space(6.0);
-                if drop_zone(ui, &t, "Values", "Values (required calculation)", |ui| {
-                    let mut remove_val: Option<usize> = None;
-                    for (i, v) in app.pivot_spec.values.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(format!("{}: {}", v.aggregate.label(), v.field.name)).color(t.text));
-                            if ui.small_button("x").on_hover_text("Remove value").clicked() { remove_val = Some(i); }
-                        });
-                    }
-                    if app.pivot_spec.values.is_empty() { ui.label(RichText::new("(drop a field here — Sum for numbers, Count otherwise)").color(t.text_disabled)); }
-                    if let Some(i) = remove_val { app.remove_value_field(i); }
-                }) { drop_val = current_drag(ui).map(|d| (d.name, d.dtype)); }
-
-                if let Some(n) = drop_row { app.add_row_field(n); }
-                if let Some(n) = drop_col { app.add_col_field(n); }
-                if let Some((n, dt)) = drop_val {
-                    let agg = if matches!(dt, DataType::Integer | DataType::Decimal) { Aggregate::Sum } else { Aggregate::Count };
-                    app.add_value_field(n, agg);
+                app.sync_layout_pickers();
+                let field_names: Vec<String> = app.table.as_ref().map(|tbl| tbl.columns.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+                if field_names.is_empty() {
+                    ui.label(RichText::new("Load data to configure Rows, Columns, and Values.").color(t.text_disabled));
+                } else {
+                    layout_picker_ui(app, ui, &t, &field_names);
                 }
-                clear_drag_if_released(ui);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new("Options").strong().color(t.text_strong));
@@ -427,6 +290,140 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
         });
 }
 
+fn data_type_label(dt: DataType) -> &'static str {
+    match dt {
+        DataType::String => "Text (String)",
+        DataType::Integer => "Integer",
+        DataType::Decimal => "Decimal",
+        DataType::Boolean => "Boolean",
+        DataType::Date => "Date",
+        DataType::DateTime => "DateTime",
+    }
+}
+
+fn agg_label(agg: Aggregate) -> &'static str {
+    match agg {
+        Aggregate::Sum => "Sum",
+        Aggregate::Count => "Count",
+        Aggregate::CountDistinct => "Count distinct",
+        Aggregate::Average => "Average",
+        Aggregate::Min => "Min",
+        Aggregate::Max => "Max",
+    }
+}
+
+fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_names: &[String]) {
+    let mut add_row: Option<(String, DataType)> = None;
+    let mut add_col: Option<(String, DataType)> = None;
+    let mut add_val: Option<(String, Aggregate)> = None;
+
+    ui.group(|ui| {
+        ui.label(RichText::new("Rows (group by)").strong().color(t.text_strong));
+        ui.label(RichText::new("1) data column  2) interpret/type").color(t.text_muted).size(11.0));
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("pick_row_field").selected_text(&app.pick_row_field).width(140.0).show_ui(ui, |ui| {
+                for f in field_names {
+                    if ui.selectable_value(&mut app.pick_row_field, f.clone(), f).changed() {
+                        if let Some(dt) = app.field_type(&app.pick_row_field) { app.pick_row_as_type = dt; }
+                    }
+                }
+            });
+            egui::ComboBox::from_id_salt("pick_row_type").selected_text(data_type_label(app.pick_row_as_type)).width(120.0).show_ui(ui, |ui| {
+                for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] {
+                    ui.selectable_value(&mut app.pick_row_as_type, dt, data_type_label(dt));
+                }
+            });
+            if ui.button("Add Row").clicked() { add_row = Some((app.pick_row_field.clone(), app.pick_row_as_type)); }
+        });
+        let mut remove_row: Option<usize> = None;
+        let mut move_row: Option<(usize, usize)> = None;
+        let row_len = app.pivot_spec.rows.len();
+        for (i, f) in app.pivot_spec.rows.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&f.name).color(t.text));
+                if ui.small_button("x").on_hover_text("Remove from Rows").clicked() { remove_row = Some(i); }
+                if i > 0 && ui.small_button("^").clicked() { move_row = Some((i, i - 1)); }
+                if i + 1 < row_len && ui.small_button("v").clicked() { move_row = Some((i, i + 1)); }
+            });
+        }
+        if row_len == 0 { ui.label(RichText::new("(no row grouping)").color(t.text_disabled)); }
+        if let Some(i) = remove_row { app.remove_row_field(i); }
+        else if let Some((a, b)) = move_row { app.move_row_field(a, b); }
+    });
+
+    ui.add_space(6.0);
+    ui.group(|ui| {
+        ui.label(RichText::new("Columns (split, optional)").strong().color(t.text_strong));
+        ui.label(RichText::new("1) data column  2) interpret/type").color(t.text_muted).size(11.0));
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("pick_col_field").selected_text(&app.pick_col_field).width(140.0).show_ui(ui, |ui| {
+                for f in field_names {
+                    if ui.selectable_value(&mut app.pick_col_field, f.clone(), f).changed() {
+                        if let Some(dt) = app.field_type(&app.pick_col_field) { app.pick_col_as_type = dt; }
+                    }
+                }
+            });
+            egui::ComboBox::from_id_salt("pick_col_type").selected_text(data_type_label(app.pick_col_as_type)).width(120.0).show_ui(ui, |ui| {
+                for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] {
+                    ui.selectable_value(&mut app.pick_col_as_type, dt, data_type_label(dt));
+                }
+            });
+            if ui.button("Add Column").clicked() { add_col = Some((app.pick_col_field.clone(), app.pick_col_as_type)); }
+        });
+        let mut remove_col: Option<usize> = None;
+        let mut move_col: Option<(usize, usize)> = None;
+        let col_len = app.pivot_spec.columns.len();
+        for (i, f) in app.pivot_spec.columns.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&f.name).color(t.text));
+                if ui.small_button("x").on_hover_text("Remove from Columns").clicked() { remove_col = Some(i); }
+                if i > 0 && ui.small_button("^").clicked() { move_col = Some((i, i - 1)); }
+                if i + 1 < col_len && ui.small_button("v").clicked() { move_col = Some((i, i + 1)); }
+            });
+        }
+        if col_len == 0 { ui.label(RichText::new("(no column split)").color(t.text_disabled)); }
+        if let Some(i) = remove_col { app.remove_col_field(i); }
+        else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
+    });
+
+    ui.add_space(6.0);
+    ui.group(|ui| {
+        ui.label(RichText::new("Values (required)").strong().color(t.text_strong));
+        ui.label(RichText::new("1) data column  2) calculation (Sum/Count/Avg...)").color(t.text_muted).size(11.0));
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("pick_val_field").selected_text(&app.pick_val_field).width(140.0).show_ui(ui, |ui| {
+                for f in field_names {
+                    if ui.selectable_value(&mut app.pick_val_field, f.clone(), f).changed() {
+                        if let Some(dt) = app.field_type(&app.pick_val_field) {
+                            app.pick_val_agg = if matches!(dt, DataType::Integer | DataType::Decimal) { Aggregate::Sum } else { Aggregate::Count };
+                        }
+                    }
+                }
+            });
+            egui::ComboBox::from_id_salt("pick_val_agg").selected_text(agg_label(app.pick_val_agg)).width(120.0).show_ui(ui, |ui| {
+                for agg in [Aggregate::Sum, Aggregate::Count, Aggregate::CountDistinct, Aggregate::Average, Aggregate::Min, Aggregate::Max] {
+                    ui.selectable_value(&mut app.pick_val_agg, agg, agg_label(agg));
+                }
+            });
+            if ui.button("Add Value").clicked() { add_val = Some((app.pick_val_field.clone(), app.pick_val_agg)); }
+        });
+        ui.label(RichText::new("Tip: Sum/Avg/Min/Max make sense for numbers; Count works for any column.").color(t.text_muted).size(10.0));
+        let mut remove_val: Option<usize> = None;
+        for (i, v) in app.pivot_spec.values.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{}({})", v.aggregate.label(), v.field.name)).color(t.text));
+                if ui.small_button("x").on_hover_text("Remove value").clicked() { remove_val = Some(i); }
+            });
+        }
+        if app.pivot_spec.values.is_empty() { ui.label(RichText::new("(add a Value to compute the pivot)").color(t.accent)); }
+        if let Some(i) = remove_val { app.remove_value_field(i); }
+    });
+
+    if let Some((n, dt)) = add_row { app.reinterpret_named_column(&n, dt); app.add_row_field(n); }
+    if let Some((n, dt)) = add_col { app.reinterpret_named_column(&n, dt); app.add_col_field(n); }
+    if let Some((n, agg)) = add_val { app.add_value_field(n, agg); }
+}
+
 fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
     ui.label(RichText::new(title).strong().color(t.text_strong).size(13.0));
 }
@@ -449,7 +446,7 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
             .inner_margin(egui::Margin::same(10))
             .corner_radius(6.0)
             .show(ui, |ui| {
-                ui.label(RichText::new("Build your pivot (left panel: Fields)").strong().color(t.text_strong));
+                ui.label(RichText::new("Build your pivot (Pivot Layout panel, right)").strong().color(t.text_strong));
                 let rows = if has_rows { app.pivot_spec.rows.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") } else { "(none - optional)".to_string() };
                 let cols = if has_cols { app.pivot_spec.columns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") } else { "(none - optional)".to_string() };
                 let vals = if has_vals { app.pivot_spec.values.iter().map(|v| format!("{}({})", v.aggregate.label(), v.field.name)).collect::<Vec<_>>().join(", ") } else { "(missing - required)".to_string() };

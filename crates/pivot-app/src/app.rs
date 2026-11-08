@@ -57,6 +57,13 @@ pub struct PivotApp {
     pub filter_field: String,
     pub filter_op: FilterOp,
     pub filter_value_idx: usize,
+    // Layout picker draft (UI state)
+    pub pick_row_field: String,
+    pub pick_row_as_type: DataType,
+    pub pick_col_field: String,
+    pub pick_col_as_type: DataType,
+    pub pick_val_field: String,
+    pub pick_val_agg: Aggregate,
 }
 
 impl PivotApp {
@@ -86,6 +93,12 @@ impl PivotApp {
             filter_field: String::new(),
             filter_op: FilterOp::Equals,
             filter_value_idx: 0,
+            pick_row_field: String::new(),
+            pick_row_as_type: DataType::String,
+            pick_col_field: String::new(),
+            pick_col_as_type: DataType::String,
+            pick_val_field: String::new(),
+            pick_val_agg: Aggregate::Count,
         }
     }
 
@@ -103,6 +116,46 @@ impl PivotApp {
 
     pub fn col_count(&self) -> usize {
         self.table.as_ref().map(|t| t.column_count()).unwrap_or(0)
+    }
+
+    pub fn sync_layout_pickers(&mut self) {
+        let fields: Vec<(String, DataType)> = self
+            .table
+            .as_ref()
+            .map(|t| t.columns.iter().map(|c| (c.name.clone(), c.effective_type())).collect())
+            .unwrap_or_default();
+        if fields.is_empty() {
+            return;
+        }
+        if self.pick_row_field.is_empty() || !fields.iter().any(|(n, _)| n == &self.pick_row_field) {
+            self.pick_row_field = fields[0].0.clone();
+            self.pick_row_as_type = fields[0].1;
+        }
+        if self.pick_col_field.is_empty() || !fields.iter().any(|(n, _)| n == &self.pick_col_field) {
+            self.pick_col_field = fields[0].0.clone();
+            self.pick_col_as_type = fields[0].1;
+        }
+        if self.pick_val_field.is_empty() || !fields.iter().any(|(n, _)| n == &self.pick_val_field) {
+            // Prefer a numeric field for values when available.
+            if let Some((n, _dt)) = fields.iter().find(|(_, dt)| matches!(dt, DataType::Integer | DataType::Decimal)) {
+                self.pick_val_field = n.clone();
+                self.pick_val_agg = Aggregate::Sum;
+            } else {
+                self.pick_val_field = fields[0].0.clone();
+                self.pick_val_agg = Aggregate::Count;
+            }
+        }
+    }
+
+    pub fn field_type(&self, name: &str) -> Option<DataType> {
+        self.table.as_ref()?.columns.iter().find(|c| c.name == name).map(|c| c.effective_type())
+    }
+
+    pub fn reinterpret_named_column(&mut self, name: &str, target: DataType) {
+        let idx = self.table.as_ref().and_then(|t| t.columns.iter().position(|c| c.name == name));
+        if let Some(i) = idx {
+            self.reinterpret_column(i, target);
+        }
     }
 
     pub fn poll_loading(&mut self, ctx: &egui::Context) {
