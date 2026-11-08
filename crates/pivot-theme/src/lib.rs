@@ -1,4 +1,4 @@
-﻿//! Theme tokens and brightness modes for Pivot Studio.
+//! Theme tokens and brightness modes for Pivot Studio.
 //!
 //! Design pattern reference: DesignCraft `crates/ui-egui/src/theme.rs`
 //! (`reference/designcraft/crates/ui-egui/src/theme.rs` after restructure).
@@ -7,6 +7,11 @@
 //! - a central `Tokens` resolved per brightness
 //! - `apply(ctx, tokens)` installs egui visuals/text styles/spacing
 //! - widgets source colors from tokens (no ad-hoc literals in widget code)
+//!
+//! Phase 4 adds role-based table themes/presets (`table` module) rendered from
+//! resolved roles for screen/export parity.
+
+pub mod table;
 
 use egui::{Color32, Context, CornerRadius, FontId, Margin, Stroke, Style, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};

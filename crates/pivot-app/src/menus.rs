@@ -75,7 +75,17 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
         (
             "Format",
             vec![
-                cmd("Table Theme...", "format.theme"),
+                Item::Sub(
+                    "Table Theme".to_string(),
+                    vec![
+                        cmd_p("Classic Grid", "format.theme", json!({"id":"classicGrid"})),
+                        cmd_p("Ledger / Zebra", "format.theme", json!({"id":"ledger"})),
+                        cmd_p("Minimal", "format.theme", json!({"id":"minimal"})),
+                        cmd_p("Executive Accent", "format.theme", json!({"id":"executive"})),
+                        cmd_p("Compact Dense", "format.theme", json!({"id":"compactDense"})),
+                        cmd_p("High Contrast", "format.theme", json!({"id":"highContrast"})),
+                    ],
+                ),
                 cmd("Number Format...", "format.number"),
             ],
         ),

@@ -1,12 +1,11 @@
 //! Custom-painted pivot grid (AC2.5): sticky headers, column resize, selection+copy (TSV),
 //! and colspan/rowspan rendering for `ThemedTableModel`.
 
-use egui::{Color32, FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use pivot_core::model::{CellRole, ThemedTableModel};
-use pivot_theme::Tokens;
+use pivot_theme::table::{TableStyle, TableThemeId};
+use pivot_theme::{Brightness, Tokens};
 
-const ROW_H: f32 = 28.0;
-const HEADER_H: f32 = 30.0;
 const PAD_X: f32 = 8.0;
 const MIN_COL_W: f32 = 50.0;
 const RESIZE_HIT: f32 = 5.0;
@@ -74,7 +73,8 @@ fn ensure_widths(state: &mut GridUiState, model: &ThemedTableModel) {
     }
 }
 
-pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens) {
+pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens, brightness: Brightness, table_theme: TableThemeId) {
+    let style = TableStyle::resolve(table_theme, brightness, t);
     let grid_id = ui.id().with("pivot_grid_state");
     let mut state = GridUiState::load(ui.ctx(), grid_id);
     ensure_widths(&mut state, model);
@@ -99,11 +99,13 @@ pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens) {
 
     let col_count = state.col_widths.len();
     let total_w: f32 = state.col_widths.iter().sum();
+    let row_h = style.row_height;
+    let header_h_unit = style.header_height;
     let header_rows_n = model.header_rows.len();
-    let header_h = header_rows_n as f32 * HEADER_H;
+    let header_h = header_rows_n as f32 * header_h_unit;
     let footer_rows_n = model.footer_bands.len();
-    let body_h = model.body_rows.len() as f32 * ROW_H;
-    let footer_h = footer_rows_n as f32 * ROW_H;
+    let body_h = model.body_rows.len() as f32 * row_h;
+    let footer_h = footer_rows_n as f32 * row_h;
     let content_h = body_h + footer_h;
 
     let avail = ui.available_size();
@@ -119,17 +121,17 @@ pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens) {
         .max_height(body_view_h);
     let mut x_offset: f32 = ui.ctx().data(|d| d.get_temp::<f32>(grid_id.with("xoff")).unwrap_or(0.0));
 
-    // Header strip (horizontal synced by reading body offset next frame is imperfect; we read stored offset)
+    // Header strip
     let (header_rect, _) = ui.allocate_exact_size(Vec2::new(avail.x.max(200.0), header_h), Sense::hover());
-    paint_header(ui, model, t, &state.col_widths, header_rect, x_offset);
+    paint_header(ui, model, &style, &state.col_widths, header_rect, x_offset, header_h_unit);
     // Resize handles in header
     handle_resize(ui, &mut state.col_widths, header_rect, x_offset, col_count);
 
     let body_out = body_scroll.show(ui, |ui| {
-        let (content_rect, response) = ui.allocate_exact_size(Vec2::new(total_w.max(100.0), content_h.max(ROW_H)), Sense::click_and_drag());
+        let (content_rect, response) = ui.allocate_exact_size(Vec2::new(total_w.max(100.0), content_h.max(row_h)), Sense::click_and_drag());
         let painter = ui.painter_at(content_rect.intersect(ui.clip_rect()));
-        paint_body_and_footer(&painter, model, t, &state, content_rect, header_rows_n);
-        handle_selection(ui.ctx(), &response, model, &mut state, content_rect, header_rows_n);
+        paint_body_and_footer(&painter, model, &style, &state, content_rect, header_rows_n, row_h);
+        handle_selection(ui.ctx(), &response, model, &mut state, content_rect, header_rows_n, row_h);
     });
     // capture horizontal offset (egui 0.31: state.offset)
     x_offset = body_out.state.offset.x;
@@ -148,10 +150,9 @@ pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens) {
     ui.ctx().request_repaint(); // keep resize/offset in sync feeling responsive
 }
 
-fn paint_header(ui: &Ui, model: &ThemedTableModel, t: &Tokens, col_widths: &[f32], rect: Rect, x_offset: f32) {
+fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_widths: &[f32], rect: Rect, x_offset: f32, header_h_unit: f32) {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, t.grid_header);
-    // Build occupancy for rowspan/colspan in header
+    painter.rect_filled(rect, 0.0, style.col_header.fill);
     let rows = model.header_rows.len();
     let cols = col_widths.len();
     let mut occupied = vec![vec![false; cols]; rows];
@@ -169,15 +170,15 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, t: &Tokens, col_widths: &[f32
             }
             let x0 = rect.min.x + col_x(col_widths, ci) - x_offset;
             let w: f32 = col_widths[ci..ci + cs].iter().sum();
-            let y0 = rect.min.y + ri as f32 * HEADER_H;
-            let h = rs as f32 * HEADER_H;
+            let y0 = rect.min.y + ri as f32 * header_h_unit;
+            let h = rs as f32 * header_h_unit;
             let cell_rect = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(w, h));
             let vis = cell_rect.intersect(rect);
             if vis.is_positive() {
-                let bg = role_bg(cell.role, t, true);
-                painter.rect_filled(cell_rect, 0.0, bg);
-                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, t.grid_line), StrokeKind::Inside);
-                let text_color = role_fg(cell.role, t);
+                let rs_style = role_style_for(style, cell.role, false);
+                painter.rect_filled(cell_rect, 0.0, rs_style.fill);
+                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs_style.grid_line), StrokeKind::Inside);
+                let text_color = rs_style.text;
                 let galley = painter.layout_no_wrap(truncate(&cell.text, 60), FontId::proportional(13.0), text_color);
                 let tx = (cell_rect.min.x + PAD_X).min(cell_rect.max.x - 4.0);
                 let ty = cell_rect.center().y - galley.size().y * 0.5;
@@ -186,7 +187,7 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, t: &Tokens, col_widths: &[f32
             ci += cs;
         }
     }
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, t.border), StrokeKind::Inside);
+    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, style.border), StrokeKind::Inside);
 }
 
 fn handle_resize(ui: &Ui, col_widths: &mut [f32], header_rect: Rect, x_offset: f32, col_count: usize) {
@@ -206,67 +207,63 @@ fn handle_resize(ui: &Ui, col_widths: &mut [f32], header_rect: Rect, x_offset: f
     }
 }
 
-fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, t: &Tokens, state: &GridUiState, rect: Rect, header_rows_n: usize) {
+fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, style: &TableStyle, state: &GridUiState, rect: Rect, header_rows_n: usize, row_h: f32) {
     let sel = state.selection();
     // body
     for (ri, brow) in model.body_rows.iter().enumerate() {
-        let y0 = rect.min.y + ri as f32 * ROW_H;
-        let _row_rect = Rect::from_min_size(Pos2::new(rect.min.x, y0), Vec2::new(rect.width(), ROW_H));
+        let y0 = rect.min.y + ri as f32 * row_h;
         let mut ci = 0usize;
+        let zebra = ri % 2 == 1;
         for cell in brow {
             let cs = cell.colspan.max(1);
             let x0 = rect.min.x + col_x(&state.col_widths, ci);
             let w: f32 = state.col_widths.iter().skip(ci).take(cs).sum();
-            let cell_rect = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(w, ROW_H));
+            let cell_rect = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(w, row_h));
             let vis_row = header_rows_n + ri;
             let selected = sel.map(|(r0, c0, r1, c1)| vis_row >= r0 && vis_row <= r1 && ci >= c0 && ci < c1 + 1).unwrap_or(false);
-            let bg = if selected { t.selection.gamma_multiply(0.35) } else { role_bg(cell.role, t, false) };
+            let rs = role_style_for(style, cell.role, zebra);
+            let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
             painter.rect_filled(cell_rect, 0.0, bg);
-            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, t.grid_line), StrokeKind::Inside);
+            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
             let indent = if matches!(cell.role, CellRole::RowHeader) { cell.indent as f32 * 12.0 } else { 0.0 };
-            let text_color = role_fg(cell.role, t);
-            let font = if matches!(cell.role, CellRole::RowHeader | CellRole::Subtotal | CellRole::GrandTotal) {
-                FontId::proportional(13.0)
-            } else {
-                FontId::proportional(13.0)
-            };
-            let galley = painter.layout_no_wrap(truncate(&cell.text, 80), font, text_color);
+            let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
             let tx = (cell_rect.min.x + PAD_X + indent).min(cell_rect.max.x - 4.0);
             let ty = cell_rect.center().y - galley.size().y * 0.5;
-            painter.galley(Pos2::new(tx, ty), galley, text_color);
+            painter.galley(Pos2::new(tx, ty), galley, rs.text);
             ci += cs;
         }
     }
     // footers
     let mut fi = 0usize;
     for band in &model.footer_bands {
-        let y0 = rect.min.y + model.body_rows.len() as f32 * ROW_H + fi as f32 * ROW_H;
+        let y0 = rect.min.y + model.body_rows.len() as f32 * row_h + fi as f32 * row_h;
         let mut ci = 0usize;
         let total_w: f32 = state.col_widths.iter().sum();
         if band.cells.len() == 1 && band.cells[0].colspan <= 1 && state.col_widths.len() > 1 {
-            // Notes-style single spanning cell
             let cell = &band.cells[0];
-            let cell_rect = Rect::from_min_size(Pos2::new(rect.min.x, y0), Vec2::new(total_w, ROW_H));
+            let cell_rect = Rect::from_min_size(Pos2::new(rect.min.x, y0), Vec2::new(total_w, row_h));
             let vis_row = header_rows_n + model.body_rows.len() + fi;
             let selected = sel.map(|(r0, _, r1, _)| vis_row >= r0 && vis_row <= r1).unwrap_or(false);
-            let bg = if selected { t.selection.gamma_multiply(0.35) } else { role_bg(cell.role, t, false) };
+            let rs = if band.kind == pivot_core::model::FooterBandKind::Notes { style.notes } else { role_style_for(style, cell.role, false) };
+            let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
             painter.rect_filled(cell_rect, 0.0, bg);
-            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, t.grid_line), StrokeKind::Inside);
-            let galley = painter.layout_no_wrap(truncate(&cell.text, 160), FontId::proportional(12.0), t.text_muted);
-            painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, t.text_muted);
+            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+            let galley = painter.layout_no_wrap(truncate(&cell.text, 160), FontId::proportional(12.0), rs.text);
+            painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
         } else {
             for cell in &band.cells {
                 let cs = cell.colspan.max(1);
                 let x0 = rect.min.x + col_x(&state.col_widths, ci);
                 let w: f32 = state.col_widths.iter().skip(ci).take(cs).sum::<f32>().max(*state.col_widths.get(ci).unwrap_or(&110.0));
-                let cell_rect = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(w, ROW_H));
+                let cell_rect = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(w, row_h));
                 let vis_row = header_rows_n + model.body_rows.len() + fi;
                 let selected = sel.map(|(r0, c0, r1, c1)| vis_row >= r0 && vis_row <= r1 && ci >= c0 && ci < c1 + 1).unwrap_or(false);
-                let bg = if selected { t.selection.gamma_multiply(0.35) } else { role_bg(cell.role, t, false) };
+                let rs = role_style_for(style, cell.role, false);
+                let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
                 painter.rect_filled(cell_rect, 0.0, bg);
-                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, t.grid_line), StrokeKind::Inside);
-                let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), role_fg(cell.role, t));
-                painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, role_fg(cell.role, t));
+                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+                let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
+                painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
                 ci += cs;
             }
         }
@@ -274,10 +271,10 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, t: &
     }
 }
 
-fn handle_selection(ctx: &egui::Context, response: &egui::Response, model: &ThemedTableModel, state: &mut GridUiState, rect: Rect, header_rows_n: usize) {
+fn handle_selection(ctx: &egui::Context, response: &egui::Response, model: &ThemedTableModel, state: &mut GridUiState, rect: Rect, header_rows_n: usize, row_h: f32) {
     if response.clicked() || response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
-            if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model) {
+            if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model, row_h) {
                 state.sel_anchor = Some((vr, vc));
                 state.sel_focus = Some((vr, vc));
                 state.copy_status = None;
@@ -286,17 +283,17 @@ fn handle_selection(ctx: &egui::Context, response: &egui::Response, model: &Them
     }
     if response.dragged() {
         if let Some(pos) = ctx.pointer_interact_pos() {
-            if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model) {
+            if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model, row_h) {
                 state.sel_focus = Some((vr, vc));
             }
         }
     }
 }
 
-fn pos_to_cell(pos: Pos2, rect: Rect, col_widths: &[f32], header_rows_n: usize, model: &ThemedTableModel) -> Option<(usize, usize)> {
+fn pos_to_cell(pos: Pos2, rect: Rect, col_widths: &[f32], header_rows_n: usize, model: &ThemedTableModel, row_h: f32) -> Option<(usize, usize)> {
     if !rect.contains(pos) && pos.y < rect.min.y { return None; }
     let local_y = (pos.y - rect.min.y).max(0.0);
-    let ri = (local_y / ROW_H) as usize;
+    let ri = (local_y / row_h).max(0.0) as usize;
     let total_rows = model.body_rows.len() + model.footer_bands.len();
     if ri >= total_rows { return None; }
     let local_x = (pos.x - rect.min.x).max(0.0);
@@ -313,22 +310,15 @@ fn col_x(col_widths: &[f32], idx: usize) -> f32 {
     col_widths.iter().take(idx).sum()
 }
 
-fn role_bg(role: CellRole, t: &Tokens, header: bool) -> Color32 {
+fn role_style_for(style: &TableStyle, role: CellRole, zebra: bool) -> pivot_theme::table::RoleStyle {
     match role {
-        CellRole::StubHead | CellRole::ColHeader => t.grid_header,
-        CellRole::RowHeader => t.panel_alt,
-        CellRole::Subtotal => t.grid_header,
-        CellRole::GrandTotal | CellRole::Footer => t.grid_header,
-        CellRole::Body => if header { t.grid_header } else { t.grid_body },
-        CellRole::Title => t.panel,
-    }
-}
-
-fn role_fg(role: CellRole, t: &Tokens) -> Color32 {
-    match role {
-        CellRole::Body => t.text,
-        CellRole::Footer => t.text_muted,
-        _ => t.text_strong,
+        CellRole::StubHead => style.stub_head,
+        CellRole::ColHeader => style.col_header,
+        CellRole::RowHeader => style.row_header,
+        CellRole::Body => if style.zebra && zebra { style.body_zebra } else { style.body },
+        CellRole::Subtotal => style.subtotal,
+        CellRole::GrandTotal => style.grand_total,
+        CellRole::Footer | CellRole::Title => style.footer,
     }
 }
 

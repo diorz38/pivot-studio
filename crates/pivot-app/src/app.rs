@@ -7,7 +7,7 @@ use pivot_core::{
     ThemedTableModel, ValueField,
 };
 use pivot_data::FileKind;
-use pivot_theme::{apply, Brightness, Tokens};
+use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +42,7 @@ pub struct PivotComputeState {
 
 pub struct PivotApp {
     pub brightness: Brightness,
+    pub table_theme: TableThemeId,
     pub status: String,
     brightness_applied: Option<Brightness>,
     exit_requested: bool,
@@ -61,6 +62,7 @@ impl PivotApp {
         apply(&cc.egui_ctx, &tokens);
         Self {
             brightness,
+            table_theme: TableThemeId::default(),
             status: "Home - open a saved project or import data to start.".to_string(),
             brightness_applied: Some(brightness),
             exit_requested: false,
@@ -466,11 +468,23 @@ impl PivotApp {
                     }
                 }
             }
+            "format.theme" => {
+                if let Some(id) = params.get("id").and_then(|v| v.as_str()) {
+                    if let Some(theme) = TableThemeId::parse(id) {
+                        self.table_theme = theme;
+                        self.status = format!("Table theme set to {}.", theme.label());
+                    } else {
+                        self.status = format!("Unknown table theme: {id}.");
+                    }
+                } else {
+                    self.status = "Select a table theme from Format > Table Theme.".to_string();
+                }
+            }
             "view.reset_layout" => {
                 self.status = "Layout reset (placeholder).".to_string();
             }
             "help.about" => {
-                self.status = "Pivot Studio (Phase 2) - pivot engine + themed model foundation. See PIVOT_STUDIO_PLAN.md.".to_string();
+                self.status = "Pivot Studio (Phase 3/4) - polished pivot model + table themes. See PIVOT_STUDIO_PLAN.md.".to_string();
             }
             _ => {
                 self.status = format!("Command '{id}' is a placeholder.");
@@ -509,6 +523,12 @@ impl PivotApp {
                             .and_then(|v| v.as_str())
                             .and_then(Brightness::parse)
                             .map(|b| b == app.brightness)
+                    } else if id == "format.theme" {
+                        params
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(pivot_theme::table::TableThemeId::parse)
+                            .map(|t| t == app.table_theme)
                     } else {
                         None
                     };
