@@ -143,6 +143,7 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 if ui.small_button("CSV").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.csv", &Value::Null, &ctx); }
                 if ui.small_button("Excel").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.xlsx", &Value::Null, &ctx); }
                 if ui.small_button("DBF").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.dbf", &Value::Null, &ctx); }
+                if ui.small_button("Database").clicked() { let ctx = ui.ctx().clone(); app.dispatch("data.connect", &Value::Null, &ctx); }
             });
             if app.loading.is_some() {
                 ui.horizontal(|ui| {
