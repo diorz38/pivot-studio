@@ -1,7 +1,5 @@
-//! Data connectors (CSV/XLSX/DBF), type inference, and query helpers.
-//! Phase 1: file-based ingest into `pivot_core::DataTable`.
-
-pub mod csv_import;
+﻿pub mod csv_import;
+pub mod db_import;
 pub mod dbf_import;
 pub mod infer;
 pub mod xlsx_import;
@@ -20,10 +18,16 @@ pub enum DataError {
     Xlsx(String),
     #[error("dbf: {0}")]
     Dbf(String),
+    #[error("database: {0}")]
+    Database(String),
+    #[error("credentials: {0}")]
+    Credentials(String),
     #[error("invalid input: {0}")]
     Invalid(String),
     #[error("unsupported: {0}")]
     Unsupported(String),
+    #[error("cancelled")]
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, DataError>;
@@ -45,3 +49,5 @@ pub fn load_file(path: &Path, kind: FileKind) -> Result<DataTable> {
         FileKind::Dbf => dbf_import::load_dbf(path),
     }
 }
+
+pub use db_import::{connect_and_preview_sqlite, execute_pivot_sqlite, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};

@@ -1,4 +1,4 @@
-﻿[workspace]
+[workspace]
 resolver = "2"
 members = [
     "crates/pivot-core",
@@ -32,6 +32,10 @@ rfd = "0.15"
 rust_xlsxwriter = "0.79"
 tempfile = "3"
 printpdf = "0.7"
+# Database + credentials (decision #2, #4, Phase 5)
+rusqlite = { version = "0.32", features = ["bundled"] }
+mysql = "26"
+keyring = { version = "3", features = ["apple-native","windows-native","linux-native"] }
 
 pivot-core = { path = "crates/pivot-core" }
 pivot-data = { path = "crates/pivot-data" }

@@ -13,6 +13,10 @@ calamine = { workspace = true }
 dbase = { workspace = true }
 encoding_rs = { workspace = true }
 chrono = { workspace = true }
+rusqlite = { workspace = true }
+mysql = { workspace = true }
+keyring = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 rust_xlsxwriter = "0.79"
