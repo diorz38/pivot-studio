@@ -455,11 +455,11 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
                 ui.label(RichText::new(format!("Values: {vals}")).color(if has_vals { t.text } else { t.accent }));
                 ui.add_space(4.0);
                 if !has_vals {
-                    ui.label(RichText::new("To see a pivot result, add a Value. Example: pick a text/category field and click Count, or pick a number field and click Sum. Rows/Columns only group data; they don’t produce a result without a Value.").color(t.text_muted));
+                    ui.label(RichText::new("To see a pivot result, add a Value. Example: pick a text/category field and click Count, or pick a number field and click Sum. Rows/Columns only group data; they donâ€™t produce a result without a Value.").color(t.text_muted));
                 } else if app.pivot_computing.is_some() {
                     ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Computing pivot...").color(t.text_muted)); });
                 } else {
-                    ui.label(RichText::new("If the result doesn’t appear, click Recompute in the Pivot Layout panel.").color(t.text_muted));
+                    ui.label(RichText::new("If the result doesnâ€™t appear, click Recompute in the Pivot Layout panel.").color(t.text_muted));
                 }
             });
 

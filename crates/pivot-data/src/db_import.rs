@@ -204,7 +204,8 @@ pub fn build_group_by_sql(table: &str, spec: &PivotSpec, dialect_sqlite: bool) -
         let expr = aggregate_sql(v.aggregate, &v.field.name)?;
         let alias = format!("v{i}");
         select.push(format!("{expr} AS \"{alias}\""));
-        columns.push(Column { name: v.effective_name(), inferred: if matches!(v.aggregate, Aggregate::Count|Aggregate::CountDistinct) { DataType::Integer } else { DataType::Decimal }, override_type: None, nullable: true });
+        // Column name = SQL alias (matches result set). ValueField in result-spec uses alias as field; display_name preserves effective name.
+        columns.push(Column { name: alias, inferred: if matches!(v.aggregate, Aggregate::Count|Aggregate::CountDistinct) { DataType::Integer } else { DataType::Decimal }, override_type: None, nullable: true });
     }
     let mut params: Vec<ParamValue> = Vec::new();
     let mut where_parts: Vec<String> = Vec::new();
@@ -258,7 +259,11 @@ fn pivot_spec_for_result(spec: &PivotSpec, plan: &PushdownPlan) -> PivotSpec {
     let mut out = spec.clone();
     out.rows = plan.columns.iter().take(plan.result_mapping.row_dims).map(|c| pivot_core::FieldRef::new(c.name.clone())).collect();
     out.columns = plan.columns.iter().skip(plan.result_mapping.row_dims).take(plan.result_mapping.col_dims).map(|c| pivot_core::FieldRef::new(c.name.clone())).collect();
-    out.values = plan.columns.iter().skip(plan.result_mapping.row_dims + plan.result_mapping.col_dims).map(|c| pivot_core::ValueField { field: pivot_core::FieldRef::new(c.name.clone()), aggregate: Aggregate::Sum, display_name: Some(c.name.clone()) }).collect();
+    let value_cols = plan.columns.iter().skip(plan.result_mapping.row_dims + plan.result_mapping.col_dims);
+    out.values = value_cols.enumerate().map(|(i, c)| {
+        let display = spec.values.get(i).map(|v| v.effective_name()).unwrap_or_else(|| c.name.clone());
+        pivot_core::ValueField { field: pivot_core::FieldRef::new(c.name.clone()), aggregate: Aggregate::Sum, display_name: Some(display) }
+    }).collect();
     out.filters.clear();
     out
 }
@@ -375,12 +380,17 @@ pub fn preview_mysql(profile: &MySqlProfile, limit: usize, cancel: Option<&Atomi
 fn query_mysql_conn(conn: &mut mysql::PooledConn, sql: &str, params: &[ParamValue], cancel: Option<&AtomicBool>) -> Result<DataTable> {
     use mysql::prelude::Queryable;
     if cancel.map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) { return Err(DataError::Cancelled); }
-    let mysql_params: Vec<mysql::Value> = params.iter().map(param_to_mysql).collect();
-    let result = if mysql_params.is_empty() {
-        conn.query_iter(sql).map_err(|e| DataError::Database(format!("{e}; sql={sql}")))?
+    if params.is_empty() {
+        let result = conn.query_iter(sql).map_err(|e| DataError::Database(format!("{e}; sql={sql}")))?;
+        collect_mysql_result(result, cancel)
     } else {
-        conn.exec_iter(sql, mysql_params).map_err(|e| DataError::Database(format!("{e}; sql={sql}")))?
-    };
+        let mysql_params: Vec<mysql::Value> = params.iter().map(param_to_mysql).collect();
+        let result = conn.exec_iter(sql, mysql_params).map_err(|e| DataError::Database(format!("{e}; sql={sql}")))?;
+        collect_mysql_result(result, cancel)
+    }
+}
+
+fn collect_mysql_result<P: mysql::prelude::Protocol>(result: mysql::QueryResult<'_, '_, '_, P>, cancel: Option<&AtomicBool>) -> Result<DataTable> {
     let columns_meta = result.columns();
     let cols_ref = columns_meta.as_ref();
     let names: Vec<String> = cols_ref.iter().map(|c| c.name_str().to_string()).collect();

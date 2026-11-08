@@ -1,4 +1,4 @@
-﻿pub mod csv_import;
+pub mod csv_import;
 pub mod db_import;
 pub mod dbf_import;
 pub mod infer;
@@ -50,4 +50,4 @@ pub fn load_file(path: &Path, kind: FileKind) -> Result<DataTable> {
     }
 }
 
-pub use db_import::{connect_and_preview_sqlite, execute_pivot_sqlite, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};
+pub use db_import::{connect_and_preview_sqlite, execute_pivot_mysql, execute_pivot_sqlite, list_sqlite_tables, preview_mysql, store_secret, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};

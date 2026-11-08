@@ -6,7 +6,7 @@ use pivot_core::{
     Aggregate, DataTable, DataType, FieldRef, Filter, FilterOp, FooterBandSpec, PivotSpec, SubtotalConfig,
     ThemedTableModel, Value as CoreValue, ValueField,
 };
-use pivot_data::FileKind;
+use pivot_data::{FileKind, db_import::{self, CredentialMode, MySqlProfile}};
 use pivot_export::ExportStyle;
 use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
 use serde_json::Value;
@@ -77,6 +77,27 @@ pub struct PivotApp {
     pub pick_col_as_type: DataType,
     pub pick_val_field: String,
     pub pick_val_agg: Aggregate,
+    // Phase 5: database connect/pushdown
+    pub db_panel_open: bool,
+    pub db_tab_mysql: bool,
+    pub db_sqlite_path: String,
+    pub db_sqlite_tables: Vec<String>,
+    pub db_sqlite_table: String,
+    pub db_mysql_host: String,
+    pub db_mysql_port: String,
+    pub db_mysql_db: String,
+    pub db_mysql_user: String,
+    pub db_mysql_table: String,
+    pub db_mysql_password: String,
+    pub db_mysql_ssl: bool,
+    pub db_mysql_cred_mode_session: bool,
+    pub db_source: Option<DbSource>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DbSource {
+    Sqlite { path: PathBuf, table: String },
+    MySql(MySqlProfile),
 }
 
 impl PivotApp {
@@ -113,6 +134,20 @@ impl PivotApp {
             pick_col_as_type: DataType::String,
             pick_val_field: String::new(),
             pick_val_agg: Aggregate::Count,
+            db_panel_open: false,
+            db_tab_mysql: false,
+            db_sqlite_path: String::new(),
+            db_sqlite_tables: Vec::new(),
+            db_sqlite_table: String::new(),
+            db_mysql_host: "127.0.0.1".to_string(),
+            db_mysql_port: "3306".to_string(),
+            db_mysql_db: String::new(),
+            db_mysql_user: String::new(),
+            db_mysql_table: String::new(),
+            db_mysql_password: String::new(),
+            db_mysql_ssl: false,
+            db_mysql_cred_mode_session: true,
+            db_source: None,
         }
     }
 
@@ -201,6 +236,7 @@ impl PivotApp {
                     self.source_name = Some(loaded.name);
                     self.table = Some(loaded.table);
                     self.pivot_model = None;
+                    self.db_source = None;
                     self.on_home = false;
                 }
                 Err(e) => {
@@ -366,11 +402,99 @@ impl PivotApp {
         }
     }
 
+    pub fn db_pick_sqlite_file(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().set_title("Select SQLite database").add_filter("SQLite", &["db", "sqlite", "sqlite3"]).pick_file() {
+            self.db_sqlite_path = path.to_string_lossy().to_string();
+            self.db_sqlite_tables.clear();
+            self.db_sqlite_table.clear();
+            self.refresh_sqlite_tables();
+        }
+    }
+
+    pub fn refresh_sqlite_tables(&mut self) {
+        if self.db_sqlite_path.trim().is_empty() { return; }
+        match db_import::list_sqlite_tables(&PathBuf::from(self.db_sqlite_path.trim())) {
+            Ok(t) => {
+                self.db_sqlite_tables = t;
+                if self.db_sqlite_table.is_empty() {
+                    self.db_sqlite_table = self.db_sqlite_tables.first().cloned().unwrap_or_default();
+                }
+                self.status = format!("Found {} SQLite table(s).", self.db_sqlite_tables.len());
+            }
+            Err(e) => self.status = format!("SQLite error: {e}"),
+        }
+    }
+
+    pub fn db_preview_sqlite(&mut self) {
+        let path = PathBuf::from(self.db_sqlite_path.trim());
+        let table = self.db_sqlite_table.trim().to_string();
+        if table.is_empty() { self.status = "Choose a SQLite table.".to_string(); return; }
+        match db_import::connect_and_preview_sqlite(&path, &table, 500, None) {
+            Ok(t) => {
+                self.source_name = Some(format!("sqlite:{}:{}", path.display(), table));
+                self.table = Some(t);
+                self.db_source = Some(DbSource::Sqlite { path, table });
+                self.pivot_model = None;
+                self.sync_layout_pickers();
+                self.status = format!("Loaded SQLite preview ({} rows, {} cols). Recompute uses pushdown SQL (GROUP BY).", self.row_count(), self.col_count());
+                self.on_home = false;
+            }
+            Err(e) => self.status = format!("SQLite preview failed: {e}"),
+        }
+    }
+
+    pub fn mysql_credential_mode(&self) -> CredentialMode {
+        if self.db_mysql_cred_mode_session { CredentialMode::SessionOnly } else { CredentialMode::OsKeychain }
+    }
+
+    pub fn db_apply_mysql_profile(&mut self) -> Option<MySqlProfile> {
+        let port: u16 = self.db_mysql_port.trim().parse().unwrap_or(3306);
+        let mut profile = MySqlProfile {
+            host: self.db_mysql_host.trim().to_string(),
+            port,
+            database: self.db_mysql_db.trim().to_string(),
+            user: self.db_mysql_user.trim().to_string(),
+            table: self.db_mysql_table.trim().to_string(),
+            ssl: self.db_mysql_ssl,
+            credential_mode: self.mysql_credential_mode(),
+            credential_ref: String::new(),
+        };
+        if profile.host.is_empty() || profile.database.is_empty() || profile.user.is_empty() || profile.table.is_empty() {
+            self.status = "MySQL: host, database, user, and table are required.".to_string();
+            return None;
+        }
+        profile.credential_ref = profile.key_ref();
+        let mode = profile.credential_mode;
+        if !self.db_mysql_password.is_empty() {
+            if let Err(e) = db_import::store_secret(mode, &profile.credential_ref, &self.db_mysql_password) {
+                self.status = format!("Credential store failed ({mode:?}): {e}");
+                return None;
+            }
+            // Secrets are stored in session/keychain only; MySqlProfile serialized for .pivot must be sanitized and never include the password.
+        }
+        Some(profile)
+    }
+
+    pub fn db_preview_mysql(&mut self) {
+        let Some(profile) = self.db_apply_mysql_profile() else { return; };
+        match db_import::preview_mysql(&profile, 500, None) {
+            Ok(t) => {
+                self.source_name = Some(format!("mysql:{}:{}/{}", profile.host, profile.database, profile.table));
+                self.table = Some(t);
+                self.db_source = Some(DbSource::MySql(profile));
+                self.pivot_model = None;
+                self.sync_layout_pickers();
+                self.status = format!("Loaded MySQL preview ({} rows, {} cols). Recompute uses pushdown SQL (GROUP BY).", self.row_count(), self.col_count());
+                self.on_home = false;
+            }
+            Err(e) => self.status = format!("MySQL preview/connect failed: {e}"),
+        }
+    }
     pub fn request_pivot_recompute(&mut self) {
-        let Some(table) = self.table.clone() else {
+        if self.table.is_none() && self.db_source.is_none() {
             self.status = "Load data before computing a pivot.".to_string();
             return;
-        };
+        }
         if self.pivot_computing.is_some() {
             self.status = "Pivot computation already in progress.".to_string();
             return;
@@ -381,23 +505,37 @@ impl PivotApp {
             return;
         }
         let spec = self.pivot_spec.clone();
+        let table = self.table.clone();
+        let db = self.db_source.clone();
         let (tx, rx) = mpsc::channel::<PivotMsg>();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_flag = Arc::clone(&cancel);
-        self.status = "Computing pivot...".to_string();
+        self.status = if db.is_some() { "Computing pivot via database pushdown (SQL GROUP BY)...".to_string() } else { "Computing pivot...".to_string() };
         self.pivot_computing = Some(PivotComputeState { rx, cancel });
         thread::spawn(move || {
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = tx.send(PivotMsg::Done(Err("Cancelled.".to_string())));
                 return;
             }
-            // compute is synchronous/pure; offload to keep UI responsive on large tables.
-            let model = compute(&table, &spec);
+            let res = if let Some(src) = db {
+                match src {
+                    DbSource::Sqlite { path, table: tname } => {
+                        db_import::execute_pivot_sqlite(&path, &tname, &spec, Some(cancel_flag.as_ref())).map_err(|e| e.to_string())
+                    }
+                    DbSource::MySql(profile) => {
+                        db_import::execute_pivot_mysql(&profile, &spec, Some(cancel_flag.as_ref())).map_err(|e| e.to_string())
+                    }
+                }
+            } else if let Some(table) = table {
+                Ok(compute(&table, &spec))
+            } else {
+                Err("No data source.".to_string())
+            };
             if cancel_flag.load(Ordering::Relaxed) {
                 let _ = tx.send(PivotMsg::Done(Err("Cancelled.".to_string())));
                 return;
             }
-            let _ = tx.send(PivotMsg::Done(Ok(model)));
+            let _ = tx.send(PivotMsg::Done(res));
         });
     }
 
@@ -672,7 +810,8 @@ impl PivotApp {
             }
             "data.connect" => {
                 self.on_home = false;
-                self.status = "Database connectors are a placeholder (Phase 5).".to_string();
+                self.db_panel_open = true;
+                self.status = "Database: configure SQLite or MySQL, preview data, and compute pivots via pushdown (Phase 5).".to_string();
             }
             "file.export" => {
                 let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string();
