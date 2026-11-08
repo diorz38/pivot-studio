@@ -2,7 +2,11 @@
 use pivot_core::{Cell, CellRole, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 use printpdf::path::PaintMode;
-use printpdf::{BuiltinFont, Color as PdfColor, Mm, PdfDocument, PdfDocumentReference, PdfLayerIndex, PdfLayerReference, PdfPageIndex, Rect, Rgb};
+use printpdf::{
+    BuiltinFont, Color as PdfColor, Mm, PdfDocument, PdfDocumentReference, PdfLayerIndex,
+    PdfLayerReference, PdfPageIndex, Rect, Rgb,
+};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
@@ -17,12 +21,29 @@ const CELL_PAD_X: f64 = 1.6;
 const CELL_PAD_Y: f64 = 1.2;
 
 pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Result<()> {
+    let bytes = render_bytes(model, style)?;
+    // AC6.5-safe write: temp sibling then rename (best-effort; fallback direct).
+    let tmp = path.with_extension(format!(
+        "{}.tmp",
+        path.extension().and_then(|s| s.to_str()).unwrap_or("pdf")
+    ));
+    std::fs::write(&tmp, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        let bytes = render_bytes(model, style)?;
+        std::fs::write(path, bytes).map_err(|e2| ExportError::Io(std::io::Error::new(e2.kind(), format!("{e}; fallback: {e2}"))))?;
+    }
+    Ok(())
+}
+
+fn render_bytes(model: &ThemedTableModel, style: ExportStyle) -> Result<Vec<u8>> {
     let ts = style.resolve();
     let cols = model.total_columns().max(1);
     let table_w = PAGE_W - MARGIN * 2.0;
     let col_w = compute_col_widths(model, cols, table_w);
 
-    let (doc, page1, layer1) = PdfDocument::new(&model.title, Mm(PAGE_W as f32), Mm(PAGE_H as f32), "Layer 1");
+    let (doc, page1, layer1) =
+        PdfDocument::new(&model.title, Mm(PAGE_W as f32), Mm(PAGE_H as f32), "Layer 1");
     let font = doc
         .add_builtin_font(BuiltinFont::Helvetica)
         .map_err(|e| ExportError::Pdf(format!("{e:?}")))?;
@@ -30,48 +51,35 @@ pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Resul
         .add_builtin_font(BuiltinFont::HelveticaBold)
         .map_err(|e| ExportError::Pdf(format!("{e:?}")))?;
 
-    let mut state = PageState {
-        doc,
-        font,
-        font_bold,
-        page: page1,
-        layer: layer1,
-        y: PAGE_H - MARGIN,
-        page_no: 1,
-    };
+    let mut state = PageState { doc, font, font_bold, page: page1, layer: layer1, y: PAGE_H - MARGIN, page_no: 1 };
 
     draw_title(&mut state, &model.title, &ts)?;
-    let header_h = (model.header_rows.len().max(1) as f64) * LINE_H + CELL_PAD_Y * 2.0;
     let footer_total_h: f64 = model.footer_bands.iter().map(|b| band_height(b)).sum();
 
     draw_header_rows(&mut state, model, &col_w, &ts)?;
 
     for row in &model.body_rows {
-        if state.y - (LINE_H + CELL_PAD_Y * 2.0) < MARGIN + footer_total_h {
+        if state.y - row_h() < MARGIN + footer_total_h {
             new_page(&mut state);
             draw_header_rows(&mut state, model, &col_w, &ts)?;
         }
         draw_model_row(&mut state, row, &col_w, &ts, false)?;
     }
 
-    if !model.footer_bands.is_empty() {
-        let need = footer_total_h;
-        if state.y - need < MARGIN {
-            new_page(&mut state);
-            draw_header_rows(&mut state, model, &col_w, &ts)?;
-        }
-        for band in &model.footer_bands {
-            draw_model_row(&mut state, &band.cells, &col_w, &ts, false)?;
-        }
+    if !model.footer_bands.is_empty() && state.y - footer_total_h < MARGIN {
+        new_page(&mut state);
+        draw_header_rows(&mut state, model, &col_w, &ts)?;
     }
-    let _ = (header_h,);
+    for band in &model.footer_bands {
+        draw_model_row(&mut state, &band.cells, &col_w, &ts, false)?;
+    }
 
-    let file = File::create(path).map_err(ExportError::Io)?;
+    let mut buf = BufWriter::new(Vec::new());
     state
         .doc
-        .save(&mut BufWriter::new(file))
+        .save(&mut buf)
         .map_err(|e| ExportError::Pdf(format!("{e:?}")))?;
-    Ok(())
+    buf.into_inner().map_err(|e| ExportError::Pdf(e.to_string()))
 }
 
 struct PageState {
@@ -83,16 +91,13 @@ struct PageState {
     y: f64,
     page_no: usize,
 }
-
 impl PageState {
     fn layer(&self) -> PdfLayerReference {
         self.doc.get_page(self.page).get_layer(self.layer)
     }
 }
-
-fn mm(v: f64) -> Mm {
-    Mm(v as f32)
-}
+fn mm(v: f64) -> Mm { Mm(v as f32) }
+fn row_h() -> f64 { LINE_H + CELL_PAD_Y * 2.0 }
 
 fn new_page(state: &mut PageState) {
     let (page, layer) = state.doc.add_page(Mm(PAGE_W as f32), Mm(PAGE_H as f32), format!("Layer {}", state.page_no + 1));
@@ -111,6 +116,8 @@ fn draw_title(state: &mut PageState, title: &str, ts: &TableStyle) -> Result<()>
 }
 
 fn draw_header_rows(state: &mut PageState, model: &ThemedTableModel, col_w: &[f64], ts: &TableStyle) -> Result<()> {
+    // Render each header row honoring colspan; rowspan is rare in current model but
+    // we respect it by painting at full row height (header rows are repeated per page).
     for row in &model.header_rows {
         draw_model_row(state, row, col_w, ts, true)?;
     }
@@ -118,31 +125,32 @@ fn draw_header_rows(state: &mut PageState, model: &ThemedTableModel, col_w: &[f6
 }
 
 fn draw_model_row(state: &mut PageState, cells: &[Cell], col_w: &[f64], ts: &TableStyle, is_header: bool) -> Result<()> {
-    let row_h = LINE_H + CELL_PAD_Y * 2.0;
+    let rh = row_h();
     let layer = state.layer();
     let mut x = MARGIN;
     let mut ci = 0usize;
     let y_top = state.y;
     for cell in cells {
-        let span = cell.colspan.max(1);
-        let w: f64 = col_w.iter().skip(ci).take(span).sum();
+        let cspan = cell.colspan.max(1);
+        let rspan = cell.rowspan.max(1);
+        let w: f64 = col_w.iter().skip(ci).take(cspan).sum();
+        let h = rh * rspan as f64;
         let rs = cell_role_style(cell.role, ts, false);
-        // background fill
         set_fill_color(&layer, rs.fill);
-        layer.add_rect(Rect::new(mm(x), mm(y_top - row_h), mm(x + w), mm(y_top)).with_mode(PaintMode::Fill));
-        // border stroke
+        layer.add_rect(Rect::new(mm(x), mm(y_top - h), mm(x + w), mm(y_top)).with_mode(PaintMode::Fill));
         set_stroke_color(&layer, rs.grid_line);
-        layer.add_rect(Rect::new(mm(x), mm(y_top - row_h), mm(x + w), mm(y_top)).with_mode(PaintMode::Stroke));
-        // text
+        layer.add_rect(Rect::new(mm(x), mm(y_top - h), mm(x + w), mm(y_top)).with_mode(PaintMode::Stroke));
         set_fill_color(&layer, rs.text);
         let font = if rs.strong || is_header { &state.font_bold } else { &state.font };
         let tx = x + CELL_PAD_X + (cell.indent as f64) * 2.5;
         let text = truncate_to_width(&cell.text, w - CELL_PAD_X * 2.0);
-        layer.use_text(sanitize(&text), FONT_SIZE as f32, mm(tx), mm(y_top - row_h + CELL_PAD_Y + 0.8), font);
+        layer.use_text(sanitize(&text), FONT_SIZE as f32, mm(tx), mm(y_top - rh + CELL_PAD_Y + 0.8), font);
         x += w;
-        ci += span;
+        ci += cspan;
     }
-    state.y -= row_h;
+    // Only advance by one visual row; rowspan is contained within the repeated header band.
+    state.y -= rh;
+    let _ = HashSet::<usize>::new();
     Ok(())
 }
 
@@ -158,10 +166,7 @@ fn compute_col_widths(model: &ThemedTableModel, cols: usize, table_w: f64) -> Ve
     }
     widths
 }
-
-fn band_height(_band: &pivot_core::FooterBand) -> f64 {
-    LINE_H + CELL_PAD_Y * 2.0
-}
+fn band_height(_band: &pivot_core::FooterBand) -> f64 { row_h() }
 
 fn cell_role_style(role: CellRole, ts: &TableStyle, zebra: bool) -> RoleStyle {
     match role {
@@ -183,11 +188,7 @@ fn set_stroke_color(layer: &PdfLayerReference, c: egui::Color32) {
     layer.set_outline_color(PdfColor::Rgb(Rgb::new(c.r() as f32 / 255.0, c.g() as f32 / 255.0, c.b() as f32 / 255.0, None)));
     layer.set_outline_thickness(0.2);
 }
-
-fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii() { c } else { '?' }).collect()
-}
-
+fn sanitize(s: &str) -> String { s.chars().map(|c| if c.is_ascii() { c } else { '?' }).collect() }
 fn truncate_to_width(s: &str, width_mm: f64) -> String {
     let max_chars = ((width_mm / (FONT_SIZE * 0.3528 * 0.55)).floor() as usize).max(1);
     let t = sanitize(s);

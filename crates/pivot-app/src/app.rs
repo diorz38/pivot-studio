@@ -41,6 +41,17 @@ pub struct PivotComputeState {
     pub cancel: Arc<AtomicBool>,
 }
 
+pub enum ExportMsg {
+    Progress(String),
+    Done(Result<String, String>),
+}
+
+pub struct ExportState {
+    pub rx: Receiver<ExportMsg>,
+    pub progress: String,
+    pub cancel: Arc<AtomicBool>,
+}
+
 pub struct PivotApp {
     pub brightness: Brightness,
     pub table_theme: TableThemeId,
@@ -54,6 +65,7 @@ pub struct PivotApp {
     pub pivot_spec: PivotSpec,
     pub pivot_model: Option<ThemedTableModel>,
     pub pivot_computing: Option<PivotComputeState>,
+    pub exporting: Option<ExportState>,
     // Filter builder draft (UI state)
     pub filter_field: String,
     pub filter_op: FilterOp,
@@ -91,6 +103,7 @@ impl PivotApp {
             },
             pivot_model: None,
             pivot_computing: None,
+            exporting: None,
             filter_field: String::new(),
             filter_op: FilterOp::Equals,
             filter_value_idx: 0,
@@ -306,6 +319,39 @@ impl PivotApp {
         if let Some(state) = &self.pivot_computing {
             state.cancel.store(true, Ordering::Relaxed);
             self.status = "Cancelling pivot...".to_string();
+        }
+    }
+
+    pub fn cancel_export(&mut self) {
+        if let Some(state) = &self.exporting {
+            state.cancel.store(true, Ordering::Relaxed);
+            self.status = "Cancelling export...".to_string();
+        }
+    }
+
+    pub fn poll_export(&mut self, ctx: &egui::Context) {
+        let mut finished: Option<Result<String, String>> = None;
+        if let Some(state) = &mut self.exporting {
+            while let Ok(msg) = state.rx.try_recv() {
+                match msg {
+                    ExportMsg::Progress(s) => {
+                        state.progress = s.clone();
+                        self.status = s;
+                    }
+                    ExportMsg::Done(res) => {
+                        finished = Some(res);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(res) = finished {
+            self.exporting = None;
+            match res {
+                Ok(s) => self.status = s,
+                Err(e) => self.status = format!("Export failed: {e}"),
+            }
+            ctx.request_repaint();
         }
     }
 
@@ -533,6 +579,10 @@ impl PivotApp {
 
 
     pub fn export_pivot(&mut self, format: &str) {
+        if self.exporting.is_some() {
+            self.status = "An export is already in progress.".to_string();
+            return;
+        }
         let Some(model) = self.pivot_model.clone() else {
             self.status = "Nothing to export: build a pivot first (add a Values field).".to_string();
             return;
@@ -561,14 +611,30 @@ impl PivotApp {
             return;
         };
         let style = ExportStyle { table_theme: self.table_theme, brightness: self.brightness };
-        match pivot_export::export(&path, &model, style) {
-            Ok(()) => {
-                self.status = format!("Exported {} ({ext}) to {}.", model.title, path.display());
+        let (tx, rx) = mpsc::channel::<ExportMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        self.status = format!("Exporting {ext} in background...");
+        self.exporting = Some(ExportState { rx, progress: self.status.clone(), cancel });
+        let title = model.title.clone();
+        thread::spawn(move || {
+            let _ = tx.send(ExportMsg::Progress(format!("Rendering {ext} export...")));
+            if cancel_flag.load(Ordering::Relaxed) {
+                let _ = tx.send(ExportMsg::Done(Err("Cancelled.".to_string())));
+                return;
             }
-            Err(e) => {
-                self.status = format!("Export failed: {e}");
+            match pivot_export::export(&path, &model, style) {
+                Ok(()) if cancel_flag.load(Ordering::Relaxed) => {
+                    let _ = tx.send(ExportMsg::Done(Err("Cancelled after write.".to_string())));
+                }
+                Ok(()) => {
+                    let _ = tx.send(ExportMsg::Done(Ok(format!("Exported {} ({ext}) to {}.", title, path.display()))));
+                }
+                Err(e) => {
+                    let _ = tx.send(ExportMsg::Done(Err(e.to_string())));
+                }
             }
-        }
+        });
     }
     pub fn dispatch(&mut self, id: &str, params: &Value, ctx: &egui::Context) {
         match id {
@@ -612,7 +678,7 @@ impl PivotApp {
                 let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string();
                 self.export_pivot(&format);
             }
-            "data.cancel_load" => self.cancel_load(),
+            "data.cancel_load" => { self.cancel_load(); self.cancel_export(); self.cancel_pivot(); }
             "pivot.recompute" => self.request_pivot_recompute(),
             "pivot.clear" => self.clear_layout(),
             "view.brightness" => {
@@ -712,7 +778,8 @@ impl eframe::App for PivotApp {
         self.ensure_theme(ctx);
         self.poll_loading(ctx);
         self.poll_pivot(ctx);
-        if self.loading.is_some() || self.pivot_computing.is_some() {
+        self.poll_export(ctx);
+        if self.loading.is_some() || self.pivot_computing.is_some() || self.exporting.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.exit_requested {

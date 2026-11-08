@@ -131,4 +131,32 @@ mod tests {
             assert!(bytes.starts_with(magic), "{name} bad magic: {:?}", &bytes[..4.min(bytes.len())]);
         }
     }
+
+    #[test]
+    fn ac6_4_export_reflects_model_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = reference_model();
+        let p1 = dir.path().join("a.html");
+        crate::export_html(&p1, &m, ExportStyle::default()).unwrap();
+        let h1 = std::fs::read_to_string(&p1).unwrap();
+
+        m.title = "Sales by Region (Product = A)".into();
+        m.footer_bands[1].cells[0].text = "Notes: Source: demo | Rows: 1 | Filters: Product:Equals".into();
+        m.body_rows.retain(|r| r.first().map(|c| c.text.as_str()) == Some("East"));
+        let p2 = dir.path().join("b.html");
+        crate::export_html(&p2, &m, ExportStyle::default()).unwrap();
+        let h2 = std::fs::read_to_string(&p2).unwrap();
+        assert_ne!(h1, h2, "export should reflect model changes (AC6.4)");
+        assert!(h2.contains("Product = A"));
+        assert!(h2.contains("Product:Equals"));
+        assert!(!h2.contains(">West<"));
+
+        let p3 = dir.path().join("c.html");
+        crate::export_html(&p3, &m, ExportStyle { table_theme: pivot_theme::table::TableThemeId::Ledger, brightness: pivot_theme::Brightness::Light }).unwrap();
+        let h3 = std::fs::read_to_string(&p3).unwrap();
+        let p4 = dir.path().join("d.html");
+        crate::export_html(&p4, &m, ExportStyle { table_theme: pivot_theme::table::TableThemeId::Minimal, brightness: pivot_theme::Brightness::Dark }).unwrap();
+        let h4 = std::fs::read_to_string(&p4).unwrap();
+        assert_ne!(h3, h4, "different table themes should produce different HTML styling");
+    }
 }
