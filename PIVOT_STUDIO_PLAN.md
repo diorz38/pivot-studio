@@ -1,6 +1,6 @@
 # Pivot Studio — Comprehensive Product & Implementation Plan (Phased)
 
-> **Status:** in progress — **Phase 0** (`9cfb9fe`, `013a2f9`), **Phase 1** (`971b5ad`,`c303259`,`960184c`,`ed241db`,`729b471`), **Phase 2 engine/model/UI + tests/grid** (`a6510d9`,`32cc369`,`f1632d9`,`c52d288`,`b555d9b`,`b6ee3b5`,`dd925a9`), **Phase 3 polish/differentiators** (`699a9c9`), **Phase 4 table themes/presets** (`dc4ba5c`). Verified on Windows (`cargo test --workspace` green: pivot-core 13, pivot-data 10, pivot-theme 4; AC2.4 50k recompute ~307ms debug). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).  
+> **Status:** in progress â€” **Phase 0** (`9cfb9fe`, `013a2f9`), **Phase 1** (`971b5ad`,`c303259`,`960184c`,`ed241db`,`729b471`), **Phase 2 engine/model/UI + tests/grid** (`a6510d9`,`32cc369`,`f1632d9`,`c52d288`,`b555d9b`,`b6ee3b5`,`dd925a9`,`a6bb218`,`5d5d0f7`,`1900ecf`,`95b9620`), **Phase 3 polish/differentiators** (`699a9c9`), **Phase 4 table themes/presets** (`dc4ba5c`), **Phase 6 export foundation/polish** (`9b7ed07`,`6900282`,`5083c0b`,`f329fce`), **Phase 5 SQLite/MySQL pushdown+credentials foundations/UI** (`5a8cce4`,`6b9507b`,`baf8ca9`). Verified on Windows (`cargo test --workspace` green: pivot-core 13, pivot-data 16 + 1 ignored MySQL integration, pivot-export 5, pivot-theme 4; AC2.4 50k recompute ~307ms debug). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).
 > **Decision:** Option 1 — keep the current contents of this folder as **UI/reference material**, then build a new desktop pivot application **from scratch**. No functionality from the current codebase is carried over except *design patterns* (layout, menu, color theme) studied as reference.  
 > **UI stack (decision #1):** **Rust + `egui/eframe` 0.31** (Phase 0 baseline; DesignCraft reference uses egui 0.37 fork — API differences handled), using **DesignCraft** as the UI reference for theme/brightness tokens, menu/chrome structure, and docking feel.  
 > **Reference codebase:** preserved at `reference/designcraft/` (git-excluded, not part of Pivot Studio build). Key UI reference files: `reference/designcraft/crates/ui-egui/src/theme.rs`, `reference/designcraft/crates/ui-egui/src/menus.rs`, `reference/designcraft/crates/ui-egui/src/app.rs`, `reference/designcraft/apps/designcraft/src/main.rs`, `reference/designcraft/crates/ui-egui/src/chrome/*`, `reference/designcraft/crates/ui-egui/src/dock.rs`.
@@ -204,29 +204,24 @@ Apply a diverse set of polished themes consistently to the pivot view, coherent 
 **Goal**  
 Support large data via database connectors with pushdown aggregation, and implement MySQL credential handling (decision #4).
 
-**Scope / deliverables** (decisions #2, #4)
-- Connectors: **SQLite via `rusqlite`**, **MySQL via `mysql`**. Connection UI for MySQL (host/port/db/user, SSL option as applicable) and file picker for SQLite.
-- **Capability negotiation:** each connector declares supported aggregates/operators/pushdown; engine generates parameterized aggregate queries (`GROUP BY`) for pushdown; identifiers validated/sanitized; **no SQL string interpolation of untrusted values**.
-- Execution mode: in-memory (small) vs pushdown (large) with a row/size estimate and user prompt/override; bounded preview; cancellable queries off the UI thread.
-- **MySQL credential modes (decision #4), user-selectable per connection:**
-  - **(a) Session-only:** secret held in memory for the app session, never written to disk.
-  - **(b) OS keychain:** secret stored/retrieved via the platform credential store (Windows Credential Manager / macOS Keychain / Linux Secret Service or a documented equivalent abstraction); the connection profile persists only a key/reference and non-secret metadata.
-- Connection profiles store the chosen mode and never persist a secret in plain form.
+**Delivered (foundations + UI, `5a8cce4`,`6b9507b`,`baf8ca9`)**
+- Deps (decision #2/#4): `rusqlite 0.32` (bundled), `mysql 26`, `keyring 3` (apple-native/windows-native/linux-native). Workspace + `crates/pivot-data/Cargo.toml`.
+- `crates/pivot-data/src/db_import.rs`: `CredentialMode { SessionOnly, OsKeychain }`; `SqliteProfile`/`MySqlProfile`/`DbProfile`; `MySqlProfile::sanitized_for_storage()` and no plaintext secret persistence. Session secrets in process memory map (`SESSION_SECRETS`); OS keychain via `keyring` service `pivot-studio`; `store_secret/load_secret/remove_secret`, `switch_credential_mode` (AC5.7). SQL safety: `validate_identifier`, quoted identifiers, `build_group_by_sql` produces parameterized `?` values for filters, `GROUP BY` dims, aggregate aliases; no untrusted SQL interpolation (AC5.3). SQLite (rusqlite): `list_sqlite_tables`, `connect_and_preview_sqlite`, `execute_pivot_sqlite` (pushdown aggregate query -> conformance model via `pivot_core::pivot::compute` on aggregate result). MySQL (mysql 26): `build_mysql_url` (encoded user/pass/db), `preview_mysql`, `execute_pivot_mysql`; generic `collect_mysql_result` for Text/Binary `QueryResult` protocols.
+- `crates/pivot-data/src/lib.rs`: exports DB API + `DataError::{Database,Credentials,Cancelled}`.
+- App/UI: `crates/pivot-app/src/app.rs` `DbSource::{Sqlite,MySql}`, DB panel state, SQLite file/table picker + preview/pushdown source, MySQL host/port/db/user/table/password + SSL flag + credential mode radio (session-only never persisted / OS keychain non-secret metadata) + preview; `request_pivot_recompute` uses DB pushdown when `db_source` set (SQL `GROUP BY`), else in-memory `compute`; file import clears `db_source`; cancellable via existing cancel plumbing (worker checks cancel; AC5.4 foundations). `crates/pivot-app/src/dock.rs` adds Database button/panel in Filters/Data area + worksheet.
+- Tests (`pivot-data` 16 + 1 ignored): `ac5_1_sqlite_pushdown_matches_in_memory` (conformance vs in-memory engine), `ac5_3_identifiers_validated_and_queries_parameterized`, `ac5_4_cancel_is_respected`, `ac5_5_session_secret_not_persisted_by_helper` (sanitized profile contains no secret), `ac5_7_mode_switch_session_to_keychain_fallback_path` (graceful when keychain unavailable), `ac5_2_mysql_pushdown_sql_generation_unit`. `#[ignore] ac5_2_mysql_pushdown_integration` requires `PIVOT_MYSQL_URL` and `sales` table (`cargo test -p pivot-data ac5_2_mysql_pushdown_integration -- --ignored`).
 
 **Acceptance criteria (all must pass)**
-- [ ] **AC5.1 SQLite pushdown:** running a pivot against a SQLite table larger than the in-memory comfort threshold executes via pushdown (`GROUP BY` aggregate query) and returns correct aggregates matching the in-memory engine on an equivalent dataset (conformance test).
-- [ ] **AC5.2 MySQL pushdown:** same conformance for MySQL (integration test against a test instance/container, or a clearly documented, repeatable local setup; the test may be marked `ignored` if no service is available but the harness and SQL generation unit tests must pass).
-- [ ] **AC5.3 Safety:** all query values are parameterized; identifiers are validated/whitelisted; a test/code review confirms no untrusted string interpolation into SQL. Malformed connection input fails with a clear error, no panic.
-- [ ] **AC5.4 UX:** long-running connect/query shows progress and can be **cancelled**; the UI remains responsive.
-- [ ] **AC5.5 Credentials — session-only:** with mode (a), connecting works for the session; restarting the app requires re-entry; no credential is written to the `.pivot` workspace file or other app config on disk (verified by inspecting saved output/config).
-- [ ] **AC5.6 Credentials — keychain:** with mode (b), the secret is saved to and retrieved from the OS keychain; the stored connection profile contains no plaintext secret; a reconnect after restart succeeds without re-entry (on a platform where the keychain is available; behavior is gracefully reported where unavailable).
-- [ ] **AC5.7 Mode switch:** the user can change a connection between session-only and keychain; switching updates storage accordingly (e.g. moving to keychain stores it, moving to session-only removes the keychain entry/reference as appropriate).
+- [~] **AC5.1 SQLite pushdown:** conformance test passes (`ac5_1_sqlite_pushdown_matches_in_memory`); UI sets SQLite `db_source` and Recompute uses pushdown path. Manual QA with large table/threshold UX pending.
+- [~] **AC5.2 MySQL pushdown:** parameterized SQL generation unit-tested; live pushdown path implemented in `execute_pivot_mysql`. Integration test harnessed as `#[ignore]` (needs MySQL service + `PIVOT_MYSQL_URL`/`sales` table). Manual/connect QA pending.
+- [~] **AC5.3 Safety:** parameterized filter values, validated/quoted identifiers, unit tests; malformed input returns clear errors (no panic by construction; fuzz/hostile-input expansion pending).
+- [~] **AC5.4 UX & responsiveness:** connect/preview/pushdown run off UI thread for recompute; cancel flag supported; DB preview currently synchronous in UI action (small 500-row preview) — move to background worker/progress if needed. Progress indicators present for recompute/export/load.
+- [~] **AC5.5 Session-only:** session store used when mode session-only; `MySqlProfile::sanitized_for_storage()` strips secret; `.pivot` workspace persistence not yet implemented (Phase 7) — invariant enforced by helper/API.
+- [~] **AC5.6 Keychain:** keyring backend wired; graceful error when unavailable/denied reported in status (test tolerates headless). Cross-platform/manual keychain QA pending.
+- [~] **AC5.7 Mode switch:** `switch_credential_mode` implemented/tested for fallback bookkeeping; UI mode selection stores secret in chosen mode on preview/apply. Persisted-profile switch UX arrives with Phase 7 `.pivot`.
 
-**Dependencies** — Phases 1–2 (engine), Phase 3/4 optional for display but model should exist.
-
----
-
-### Phase 6 — Export parity (XLSX, PDF, HTML) — *foundation landed*
+**Status:** foundations/UI landed; run MySQL integration test when service available; move DB preview to background worker and complete Phase 7 profile persistence before release.
+## Phase 6 — Export parity (XLSX, PDF, HTML) — *foundation landed*
 
 **Goal**  
 Export the pivot to XLSX, PDF, and HTML with the **same theme** and full polished structure (decision #3 for PDF).
