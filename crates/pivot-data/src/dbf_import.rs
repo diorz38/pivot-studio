@@ -84,3 +84,34 @@ fn map_value(v: &FieldValue, target: DataType) -> Value {
         other => Value::String(format!("{other:?}")),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dbase::{FieldName, FieldValue, Record, TableWriterBuilder};
+    use std::convert::TryFrom;
+
+    #[test]
+    fn dbf_happy_path_reads_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.dbf");
+        let writer = TableWriterBuilder::new()
+            .add_character_field(FieldName::try_from("NAME").unwrap(), 20)
+            .add_numeric_field(FieldName::try_from("QTY").unwrap(), 10, 0)
+            .build_with_file_dest(&path)
+            .unwrap();
+
+        let mut r1 = Record::default();
+        r1.insert("NAME".to_string(), FieldValue::Character(Some("Alpha".to_string())));
+        r1.insert("QTY".to_string(), FieldValue::Numeric(Some(10.0)));
+        let mut r2 = Record::default();
+        r2.insert("NAME".to_string(), FieldValue::Character(Some("Beta".to_string())));
+        r2.insert("QTY".to_string(), FieldValue::Numeric(Some(20.0)));
+        writer.write_records(&[r1, r2]).unwrap();
+
+        let t = load_dbf(&path).unwrap();
+        assert_eq!(t.row_count(), 2);
+        assert!(t.column_count() >= 2);
+        assert!(t.columns.iter().any(|c| c.name.eq_ignore_ascii_case("NAME")));
+    }
+}

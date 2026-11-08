@@ -13,3 +13,8 @@ calamine = { workspace = true }
 dbase = { workspace = true }
 encoding_rs = { workspace = true }
 chrono = { workspace = true }
+
+[dev-dependencies]
+rust_xlsxwriter = "0.79"
+tempfile = "3"
+dbase = { workspace = true }

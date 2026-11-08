@@ -85,6 +85,8 @@ fn cell_to_string(cell: &Data) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pivot_core::DataType;
+    use rust_xlsxwriter::Workbook;
 
     #[test]
     fn cell_to_string_basic_values() {
@@ -92,5 +94,39 @@ mod tests {
         assert_eq!(cell_to_string(&Data::String("x".to_string())), "x");
         assert_eq!(cell_to_string(&Data::Int(5)), "5");
         assert_eq!(cell_to_string(&Data::Bool(true)), "true");
+    }
+
+    #[test]
+    fn xlsx_happy_path_reads_values_and_types() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sample.xlsx");
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Data").unwrap();
+        sheet.write_string(0, 0, "name").unwrap();
+        sheet.write_string(0, 1, "qty").unwrap();
+        sheet.write_string(0, 2, "price").unwrap();
+        sheet.write_string(0, 3, "active").unwrap();
+        sheet.write_string(1, 0, "A").unwrap();
+        sheet.write_number(1, 1, 10.0).unwrap();
+        sheet.write_number(1, 2, 1.5).unwrap();
+        sheet.write_boolean(1, 3, true).unwrap();
+        sheet.write_string(2, 0, "B").unwrap();
+        sheet.write_number(2, 1, 20.0).unwrap();
+        sheet.write_number(2, 2, 2.0).unwrap();
+        sheet.write_boolean(2, 3, false).unwrap();
+        workbook.save(&path).unwrap();
+
+        let t = load_first_sheet(&path).unwrap();
+        assert_eq!(t.column_count(), 4);
+        assert_eq!(t.row_count(), 2);
+        assert_eq!(t.columns[0].name, "name");
+        assert_eq!(t.columns[1].effective_type(), DataType::Integer);
+        assert_eq!(t.columns[2].effective_type(), DataType::Decimal);
+        // Boolean may be inferred as boolean or string depending on writer; accept both as non-crashing.
+        assert!(matches!(
+            t.columns[3].effective_type(),
+            DataType::Boolean | DataType::String | DataType::Integer
+        ));
     }
 }

@@ -29,6 +29,8 @@ dbase = "0.6"     # upgraded from 0.5 baseline
 encoding_rs = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["std"] }
 rfd = "0.15"
+rust_xlsxwriter = "0.79"
+tempfile = "3"
 
 pivot-core = { path = "crates/pivot-core" }
 pivot-data = { path = "crates/pivot-data" }
