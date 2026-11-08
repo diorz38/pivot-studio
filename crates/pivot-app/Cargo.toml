@@ -9,6 +9,7 @@ eframe = { workspace = true }
 egui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rfd = { workspace = true }
 pivot-core = { workspace = true }
 pivot-data = { workspace = true }
 pivot-theme = { workspace = true }
