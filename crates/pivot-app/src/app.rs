@@ -7,6 +7,7 @@ use pivot_core::{
     ThemedTableModel, Value as CoreValue, ValueField,
 };
 use pivot_data::FileKind;
+use pivot_export::ExportStyle;
 use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
 use serde_json::Value;
 use std::path::PathBuf;
@@ -530,6 +531,45 @@ impl PivotApp {
         self.request_pivot_recompute();
     }
 
+
+    pub fn export_pivot(&mut self, format: &str) {
+        let Some(model) = self.pivot_model.clone() else {
+            self.status = "Nothing to export: build a pivot first (add a Values field).".to_string();
+            return;
+        };
+        let (ext, filter_name, filter_ext) = match format {
+            "xlsx" => ("xlsx", "Excel Workbook", "xlsx"),
+            "pdf" => ("pdf", "PDF Document", "pdf"),
+            _ => ("html", "HTML", "html"),
+        };
+        let default_name = {
+            let base = model
+                .title
+                .chars()
+                .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
+                .collect::<String>();
+            let base = base.trim();
+            if base.is_empty() { "pivot".to_string() } else { format!("{base}.{ext}") }
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .set_title(format!("Export Pivot as {}", filter_name))
+            .add_filter(filter_name, &[filter_ext])
+            .set_file_name(&default_name)
+            .save_file()
+        else {
+            self.status = "Export cancelled.".to_string();
+            return;
+        };
+        let style = ExportStyle { table_theme: self.table_theme, brightness: self.brightness };
+        match pivot_export::export(&path, &model, style) {
+            Ok(()) => {
+                self.status = format!("Exported {} ({ext}) to {}.", model.title, path.display());
+            }
+            Err(e) => {
+                self.status = format!("Export failed: {e}");
+            }
+        }
+    }
     pub fn dispatch(&mut self, id: &str, params: &Value, ctx: &egui::Context) {
         match id {
             "app.exit" | "window.close" => {
@@ -567,6 +607,10 @@ impl PivotApp {
             "data.connect" => {
                 self.on_home = false;
                 self.status = "Database connectors are a placeholder (Phase 5).".to_string();
+            }
+            "file.export" => {
+                let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string();
+                self.export_pivot(&format);
             }
             "data.cancel_load" => self.cancel_load(),
             "pivot.recompute" => self.request_pivot_recompute(),

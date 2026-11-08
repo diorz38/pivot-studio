@@ -44,7 +44,14 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
                 cmd("Import Data...", "file.import"),
                 cmd("Connect Database...", "data.connect"),
                 Item::Sep,
-                cmd("Export...", "file.export"),
+                                Item::Sub(
+                    "Export".to_string(),
+                    vec![
+                        cmd_p("Export as HTML...", "file.export", json!({"format":"html"})),
+                        cmd_p("Export as XLSX...", "file.export", json!({"format":"xlsx"})),
+                        cmd_p("Export as PDF...", "file.export", json!({"format":"pdf"})),
+                    ],
+                ),
                 Item::Sep,
                 cmd("Exit", "app.exit"),
             ],

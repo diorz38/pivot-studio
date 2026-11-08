@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "pivot-export"
 version.workspace = true
 edition.workspace = true
@@ -6,6 +6,13 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+egui = { workspace = true }
 pivot-core = { workspace = true }
 pivot-theme = { workspace = true }
+rust_xlsxwriter = { workspace = true }
+printpdf = "0.7"
+
+[dev-dependencies]
+tempfile = { workspace = true }
