@@ -3,7 +3,7 @@
 
 use crate::app::PivotApp;
 use egui::{RichText, Sense, Vec2};
-use pivot_core::{Aggregate, CellRole, DataType, ThemedTableModel};
+use pivot_core::{Aggregate, DataType, ThemedTableModel};
 use pivot_theme::Tokens;
 use serde_json::Value;
 
@@ -306,54 +306,7 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
 }
 
 fn render_model(model: &ThemedTableModel, ui: &mut egui::Ui, t: &Tokens) {
-    egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        // Render header rows
-        egui::Grid::new("pivot_header_grid").striped(false).min_col_width(90.0).show(ui, |ui| {
-            for hrow in &model.header_rows {
-                for cell in hrow {
-                    // colspan/rowspan not natively supported by egui::Grid; render text (Phase 4 can use custom painter)
-                    let mut text = cell.text.clone();
-                    if cell.colspan > 1 { text = format!("{}  ", text); }
-                    header_cell(ui, &text, t);
-                }
-                ui.end_row();
-            }
-        });
-        ui.add_space(2.0);
-        egui::Grid::new("pivot_body_grid").striped(false).min_col_width(90.0).show(ui, |ui| {
-            for brow in &model.body_rows {
-                for cell in brow {
-                    let is_row_header = matches!(cell.role, CellRole::RowHeader | CellRole::StubHead);
-                    let is_subtotal = matches!(cell.role, CellRole::Subtotal);
-                    let bg = if is_subtotal { t.grid_header } else if is_row_header { t.panel_alt } else { t.grid_body };
-                    let text_color = if is_row_header || is_subtotal { t.text_strong } else { t.text };
-                    let mut label = cell.text.clone();
-                    if cell.indent > 0 && !label.is_empty() && !is_subtotal {
-                        label = format!("{}{}", "  ".repeat(cell.indent.min(4)), label);
-                    }
-                    egui::Frame::new().fill(bg).stroke(egui::Stroke::new(1.0_f32, t.grid_line)).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
-                        let rt = if is_row_header || is_subtotal { RichText::new(label).strong().color(text_color) } else { RichText::new(label).color(text_color) };
-                        ui.label(rt);
-                    });
-                }
-                ui.end_row();
-            }
-        });
-        if !model.footer_bands.is_empty() {
-            ui.add_space(2.0);
-            egui::Grid::new("pivot_footer_grid").striped(false).min_col_width(90.0).show(ui, |ui| {
-                for band in &model.footer_bands {
-                    for cell in &band.cells {
-                        egui::Frame::new().fill(t.grid_header).stroke(egui::Stroke::new(1.0_f32, t.grid_line)).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
-                            ui.label(RichText::new(&cell.text).strong().color(t.text_strong));
-                        });
-                    }
-                    // if notes band spans conceptually as one cell with many logical cols, pad handled by renderer in future
-                    ui.end_row();
-                }
-            });
-        }
-    });
+    crate::pivot_grid::show(ui, model, t);
 }
 
 fn header_cell(ui: &mut egui::Ui, text: &str, t: &Tokens) {

@@ -4,6 +4,7 @@ mod app;
 mod chrome;
 mod dock;
 mod menus;
+mod pivot_grid;
 
 use app::PivotApp;
 
