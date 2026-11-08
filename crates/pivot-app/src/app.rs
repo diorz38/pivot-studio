@@ -276,7 +276,7 @@ impl PivotApp {
             return;
         }
         if self.pivot_spec.values.is_empty() {
-            self.status = "Add at least one Values field (with aggregate) to compute a pivot.".to_string();
+            self.status = "Pivot needs a Values field: pick a field on the left and click Sum, Count, or Avg (Rows/Columns are optional groupings).".to_string();
             self.pivot_model = None;
             return;
         }
@@ -303,22 +303,39 @@ impl PivotApp {
 
     pub fn add_row_field(&mut self, name: String) {
         if !self.pivot_spec.rows.iter().any(|f| f.name == name) {
+            let n = name.clone();
             self.pivot_spec.rows.push(FieldRef::new(name));
-            self.request_pivot_recompute();
+            if self.pivot_spec.values.is_empty() {
+                self.status = format!("Row '{n}' added. Now add a Values field (Sum/Count/Avg) to compute the pivot.");
+                self.pivot_model = None;
+            } else {
+                self.request_pivot_recompute();
+            }
+        } else {
+            self.status = format!("'{name}' is already in Rows.");
         }
     }
     pub fn add_col_field(&mut self, name: String) {
         if !self.pivot_spec.columns.iter().any(|f| f.name == name) {
+            let n = name.clone();
             self.pivot_spec.columns.push(FieldRef::new(name));
-            self.request_pivot_recompute();
+            if self.pivot_spec.values.is_empty() {
+                self.status = format!("Column '{n}' added. Now add a Values field (Sum/Count/Avg) to compute the pivot.");
+                self.pivot_model = None;
+            } else {
+                self.request_pivot_recompute();
+            }
+        } else {
+            self.status = format!("'{name}' is already in Columns.");
         }
     }
     pub fn add_value_field(&mut self, name: String, aggregate: Aggregate) {
         self.pivot_spec.values.push(ValueField {
-            field: FieldRef::new(name),
+            field: FieldRef::new(name.clone()),
             aggregate,
             display_name: None,
         });
+        self.status = format!("Value {}({name}) added. Computing pivot...", aggregate.label());
         self.request_pivot_recompute();
     }
     pub fn remove_row_field(&mut self, idx: usize) {

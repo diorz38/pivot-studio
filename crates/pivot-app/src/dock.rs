@@ -154,6 +154,22 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             }
             ui.separator();
 
+            if app.table.is_some() {
+                egui::Frame::new()
+                    .fill(t.canvas)
+                    .stroke(egui::Stroke::new(1.0_f32, t.border))
+                    .inner_margin(egui::Margin::same(8))
+                    .corner_radius(4.0)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("How to build a pivot").strong().color(t.text_strong).size(12.0));
+                        ui.label(RichText::new("1) +Row = group rows (e.g. Region)\n2) +Col = split columns (optional, e.g. Year)\n3) Add a Value = the number to calculate (required)\n   • Sum/Avg/Min/Max for numbers\n   • Count for any field").color(t.text_muted).size(11.0));
+                        if app.pivot_spec.values.is_empty() {
+                            ui.label(RichText::new("Tip: add at least one Value (e.g. Count) to show the pivot result.").color(t.accent).size(11.0));
+                        }
+                    });
+                ui.add_space(4.0);
+            }
+
             let fields: Vec<(String, DataType)> = app.table.as_ref().map(|tbl| tbl.columns.iter().map(|c| (c.name.clone(), c.effective_type())).collect()).unwrap_or_default();
             if fields.is_empty() {
                 ui.label(RichText::new("No dataset loaded.").color(t.text_disabled));
@@ -175,14 +191,22 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                                 });
                                 if effective != *current { type_change = Some((i, effective)); }
                             });
+                            ui.label(RichText::new("Group as").color(t.text_muted).size(10.0));
                             ui.horizontal_wrapped(|ui| {
-                                if ui.small_button("+Row").clicked() { add_row = Some(name.clone()); }
-                                if ui.small_button("+Col").clicked() { add_col = Some(name.clone()); }
-                                if ui.small_button("Sum").clicked() { add_val = Some((name.clone(), Aggregate::Sum)); }
-                                if ui.small_button("Count").clicked() { add_val = Some((name.clone(), Aggregate::Count)); }
-                                if ui.small_button("Avg").clicked() { add_val = Some((name.clone(), Aggregate::Average)); }
-                                if ui.small_button("Min").clicked() { add_val = Some((name.clone(), Aggregate::Min)); }
-                                if ui.small_button("Max").clicked() { add_val = Some((name.clone(), Aggregate::Max)); }
+                                if ui.small_button("+ Row").on_hover_text("Group rows by this field").clicked() { add_row = Some(name.clone()); }
+                                if ui.small_button("+ Column").on_hover_text("Split columns by this field (optional)").clicked() { add_col = Some(name.clone()); }
+                            });
+                            ui.label(RichText::new("Calculate (Value) - required").color(t.text_muted).size(10.0));
+                            ui.horizontal_wrapped(|ui| {
+                                let numeric = matches!(current, DataType::Integer | DataType::Decimal);
+                                if numeric {
+                                    if ui.small_button("Sum").on_hover_text("Add Sum of this field as a pivot value").clicked() { add_val = Some((name.clone(), Aggregate::Sum)); }
+                                    if ui.small_button("Avg").on_hover_text("Average").clicked() { add_val = Some((name.clone(), Aggregate::Average)); }
+                                    if ui.small_button("Min").clicked() { add_val = Some((name.clone(), Aggregate::Min)); }
+                                    if ui.small_button("Max").clicked() { add_val = Some((name.clone(), Aggregate::Max)); }
+                                }
+                                if ui.small_button("Count").on_hover_text("Count rows (works for any field)").clicked() { add_val = Some((name.clone(), Aggregate::Count)); }
+                                if ui.small_button("Count distinct").on_hover_text("Count unique values").clicked() { add_val = Some((name.clone(), Aggregate::CountDistinct)); }
                             });
                         });
                     }
@@ -336,8 +360,35 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         render_model(model, ui, t, app.brightness, app.table_theme);
     } else if let Some(table) = &app.table {
         ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
-        ui.label(RichText::new("Add fields to Rows/Columns/Values on the left, then Recompute. Showing data preview (first 120 rows).").color(t.text_muted));
+        let has_rows = !app.pivot_spec.rows.is_empty();
+        let has_cols = !app.pivot_spec.columns.is_empty();
+        let has_vals = !app.pivot_spec.values.is_empty();
+
+        egui::Frame::new()
+            .fill(t.panel)
+            .stroke(egui::Stroke::new(1.0_f32, if has_vals { t.border } else { t.accent }))
+            .inner_margin(egui::Margin::same(10))
+            .corner_radius(6.0)
+            .show(ui, |ui| {
+                ui.label(RichText::new("Build your pivot (left panel: Fields)").strong().color(t.text_strong));
+                let rows = if has_rows { app.pivot_spec.rows.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") } else { "(none - optional)".to_string() };
+                let cols = if has_cols { app.pivot_spec.columns.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ") } else { "(none - optional)".to_string() };
+                let vals = if has_vals { app.pivot_spec.values.iter().map(|v| format!("{}({})", v.aggregate.label(), v.field.name)).collect::<Vec<_>>().join(", ") } else { "(missing - required)".to_string() };
+                ui.label(RichText::new(format!("Rows: {rows}")).color(t.text));
+                ui.label(RichText::new(format!("Columns: {cols}")).color(t.text));
+                ui.label(RichText::new(format!("Values: {vals}")).color(if has_vals { t.text } else { t.accent }));
+                ui.add_space(4.0);
+                if !has_vals {
+                    ui.label(RichText::new("To see a pivot result, add a Value. Example: pick a text/category field and click Count, or pick a number field and click Sum. Rows/Columns only group data; they don’t produce a result without a Value.").color(t.text_muted));
+                } else if app.pivot_computing.is_some() {
+                    ui.horizontal(|ui| { ui.spinner(); ui.label(RichText::new("Computing pivot...").color(t.text_muted)); });
+                } else {
+                    ui.label(RichText::new("If the result doesn’t appear, click Recompute in the Pivot Layout panel.").color(t.text_muted));
+                }
+            });
+
         ui.add_space(8.0);
+        ui.label(RichText::new("Data preview (raw rows)").color(t.text_muted).size(12.0));
         let preview_rows = table.row_count().min(120);
         egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("data_preview_center").striped(false).min_col_width(100.0).show(ui, |ui| {
