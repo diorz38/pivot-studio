@@ -1,6 +1,6 @@
 # Pivot Studio — Comprehensive Product & Implementation Plan (Phased)
 
-> **Status:** in progress — **Phase 0** (`9cfb9fe`, `013a2f9`), **Phase 1** (`971b5ad`,`c303259`,`960184c`,`ed241db`,`729b471`), **Phase 2 engine/model/UI + tests/grid** (`a6510d9`,`32cc369`,`f1632d9`,`c52d288`,`b555d9b`). Verified on Windows (`cargo test --workspace` green; AC2.4 50k recompute ~307ms debug). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).  
+> **Status:** in progress — **Phase 0** (`9cfb9fe`, `013a2f9`), **Phase 1** (`971b5ad`,`c303259`,`960184c`,`ed241db`,`729b471`), **Phase 2 engine/model/UI + tests/grid** (`a6510d9`,`32cc369`,`f1632d9`,`c52d288`,`b555d9b`,`b6ee3b5`,`dd925a9`), **Phase 3 polish/differentiators** (`699a9c9`), **Phase 4 table themes/presets** (`dc4ba5c`). Verified on Windows (`cargo test --workspace` green: pivot-core 13, pivot-data 10, pivot-theme 4; AC2.4 50k recompute ~307ms debug). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).  
 > **Decision:** Option 1 — keep the current contents of this folder as **UI/reference material**, then build a new desktop pivot application **from scratch**. No functionality from the current codebase is carried over except *design patterns* (layout, menu, color theme) studied as reference.  
 > **UI stack (decision #1):** **Rust + `egui/eframe` 0.31** (Phase 0 baseline; DesignCraft reference uses egui 0.37 fork — API differences handled), using **DesignCraft** as the UI reference for theme/brightness tokens, menu/chrome structure, and docking feel.  
 > **Reference codebase:** preserved at `reference/designcraft/` (git-excluded, not part of Pivot Studio build). Key UI reference files: `reference/designcraft/crates/ui-egui/src/theme.rs`, `reference/designcraft/crates/ui-egui/src/menus.rs`, `reference/designcraft/crates/ui-egui/src/app.rs`, `reference/designcraft/apps/designcraft/src/main.rs`, `reference/designcraft/crates/ui-egui/src/chrome/*`, `reference/designcraft/crates/ui-egui/src/dock.rs`.
@@ -141,6 +141,7 @@ Define and compute pivots in memory from the loaded table and render a correct, 
 - `crates/pivot-core/src/lib.rs`: exports modules/types. Tests (11): `ac2_1a_single_row_sum`, `ac2_1b_row_column_pivot`, `ac2_1c_multiple_values`, `ac2_1d_filter`, `ac2_1e_aggregates_and_nulls` (West Qty `[Null,5]`: Count=2,Avg=5,Min=5,Max=5), `ac2_1e_count_distinct`, `ac2_2_multi_level_subtotals`, `ac2_4_50k_recompute_budget` (~307ms Windows debug), `ac3_1_stub_head_and_3_3_title`, `ac3_2_footer_bands`, plus `coerce_and_override_reinterpret`.
 - `crates/pivot-app/src/{app,chrome,dock,menus}.rs`: `pivot_spec`/`pivot_model` state, background recompute thread + `mpsc`/cancel (`request_pivot_recompute`, needs >=1 value), field-well actions (+Row/+Col/Sum/Count/Avg/Min/Max) and type override, Layout panel (Rows/Columns/Values with remove/reorder, Clear/Recompute, row-subtotals/grand-total toggles, stub-head edit triggers recompute), status shows computing spinner/cancel.
 - `crates/pivot-app/src/pivot_grid.rs` (`b555d9b`): custom-painted pivot grid over `ThemedTableModel` (replaces `egui::Grid` for the model view) — sticky header strip with colspan/rowspan occupancy, body+footer in `ScrollArea::both`, column resize handles, drag selection, TSV copy (selection/all) + Ctrl+C toolbar, role/indent styling via `pivot_theme::Tokens`. `crates/pivot-app/src/dock.rs` renders via `pivot_grid::show`.
+- `crates/pivot-app/src/{app,dock}.rs` (priority 1 QA): bottom-panel **Filters** UI — field/op/value picker (distinct values from loaded table, capped) adds/removes/clears `PivotSpec.filters` and triggers recompute; Notes/footer and auto title reflect active filters (exercises AC3.3).
 
 **Acceptance criteria (all must pass)**
 - [~] **AC2.1 Correctness:** golden/unit tests cover (a) single row+sum, (b) row+column pivot (2 dimensions), (c) multiple values, (d) filter, (e) count/count-distinct/avg/min/max incl. null behavior (`ac2_1c_multiple_values`). *Pending: recorded multi-dimension/multi-level subtotal fixture set.*
@@ -154,47 +155,47 @@ Define and compute pivots in memory from the loaded table and render a correct, 
 
 ---
 
-### Phase 3 — Polished table model (differentiators)
+### Phase 3 — Polished table model (differentiators) — *core delivered*
 
 **Goal**  
 Turn the raw pivot result into a presentation-ready `ThemedTableModel` with the product’s key polished behaviors.
 
-**Scope / deliverables**
-- **Header column 1 / stub-head cell**: explicit, editable text (first-class field), independent of generated row headers.
-- **Multiple footer bands** (ordered, configurable): e.g. Subtotal, Grand Total, Average, Count, and a **meta/notes** band (data source, active filter summary, row count, generated timestamp). Each band has its own aggregate/label and can be added/removed/reordered.
-- **Automatic, dynamic titles**: table title, column header labels, and footer text derived from `PivotSpec` + active filters (template-driven), **recomputed on change**, with **user override/pin** that survives until reset.
-- All of the above represented in the canonical `ThemedTableModel` (consumed later by UI theming and exporters).
+**Delivered** (`699a9c9`)
+- `crates/pivot-core/src/spec.rs`: `FooterBandSpec { kind, label, aggregate, field, enabled }` with helpers (`grand_total/notes/average/count/effective_label`), `SubtotalConfig.grand_total` legacy when explicit bands present, `PivotSpec.footer_bands` + `effective_footer_bands()` (explicit filtered-by-enabled, else legacy GrandTotal? + Notes). Exported from `crates/pivot-core/src/lib.rs`.
+- `crates/pivot-core/src/pivot.rs`: ordered configurable footer emission from `effective_footer_bands()` (GrandTotal/Average/Count/Custom/Subtotal/Notes), Notes renders `Source|Rows|Filters` (incl. filter field:op), value bands computed over filtered rows (per-column-key when column pivot). Tests `ac3_2_configurable_multi_footer` (GrandTotal+Average+Notes; Average 125 over all 4 rows) and `ac3_2_footer_reorder_and_filter_affects_values` (filter-aware, order preserved).
+- `crates/pivot-app/src/{app,dock}.rs`: stub-head edit/clear in Layout/Options; title pin checkbox + editable pinned title/reset-to-auto + auto preview (`set_title_pinned`); footer band add (Grand Total/Average/Count/Notes), remove/reorder, recompute wired; `clear_layout` preserves polished config. (Title pin UI calls recompute/reset through spec.)
 
 **Acceptance criteria (all must pass)**
-- [ ] **AC3.1 Stub-head:** the user can set arbitrary text in header column 1; it displays in the grid and is stored in the model/spec state; clearing/reset restores the default/empty state. (Verified on a pivot where row headers exist.)
-- [ ] **AC3.2 Multi-footer:** the user can enable at least **three** distinct footer bands simultaneously (including grand total and a meta/notes band); bands display in configured order; each shows correct values/labels for the current filtered result; reordering/removing updates the model and view.
-- [ ] **AC3.3 Dynamic text:** table title and relevant header/footer labels update automatically when a field assignment or filter changes; a manually overridden/pinned label remains unchanged across a subsequent recompute until the user resets it.
-- [ ] **AC3.4 Model integrity:** the `ThemedTableModel` fully describes title, header bands (incl. stub-head), body, and ordered footer bands (structure + values) independent of egui; unit tests assert model contents for stub-head, multi-footer, and dynamic-title/pin behavior.
-- [ ] **AC3.5 No regression:** Phase 2 acceptance tests still pass.
+- [~] **AC3.1 Stub-head:** editable in Layout/Options, stored in `PivotSpec.stub_head`/model header (`ac3_1_stub_head_and_3_3_title` covers model), clear/reset supported. *Pending: manual grid display smoke on a pivot with row headers.*
+- [~] **AC3.2 Multi-footer:** >=3 distinct bands configurable simultaneously (incl. GrandTotal+Notes), ordered display, correct filtered values, add/remove/reorder in UI; model tests cover config/order/filter. *Pending: manual UI verification across layouts.*
+- [~] **AC3.3 Dynamic text:** auto title updates from `PivotSpec`/filters; `title_override` pin preserved across recompute (`ac3_1_stub_head_and_3_3_title` model behavior + UI pin/reset wired). Filters UI added (bottom panel: field/op Equals/NotEquals/Include/Exclude + distinct value, add/remove/clear -> recompute) so active filters appear in Notes and feed dynamic/pinned behavior. *Pending: manual filter/field-change + pin-survives-recompute verification.*
+- [x] **AC3.4 Model integrity:** `ThemedTableModel` fully describes title/stub-head/body/ordered footer bands independent of egui; unit tests cover stub-head, multi-footer (incl. config/order/filter) and dynamic-title/pin.
+- [x] **AC3.5 No regression:** Phase 2/pivot-core/pivot-data/pivot-theme tests still pass (`cargo test --workspace` green on Windows).
 
-**Dependencies** — Phase 2.
+**Dependencies** — Phase 2.  
+**Next:** manual QA (AC3.1-3.3, filter UI once added); consider per-footer field/aggregate editor and label templates.
 
 ---
 
-### Phase 4 — Theme system & predefined presets (on-screen parity)
+### Phase 4 — Theme system & predefined presets (on-screen parity) — *core delivered*
 
 **Goal**  
 Apply a diverse set of polished themes consistently to the pivot view, coherent with app brightness.
 
-**Scope / deliverables**
-- `pivot-theme`: role-based theme (table title, stub-head, column/row headers by level, body, zebra, subtotal, grand total, extra footer bands, notes, gridlines/borders) with fill, text color, weight/size, alignment, padding, borders, number/date format defaults.
-- **Predefined, diverse theme gallery** (v1 set, >= 6 themes spanning looks such as classic grid, ledger/zebra+totals, minimal, executive/accented, compact dense, and a **High Contrast** table theme) — serialized/preset data.
-- Theme picker with live preview; grid paints from resolved theme roles (no ad-hoc styling).
-- Coherence with app Brightness modes (Light/Dark/High Contrast) and accessible contrast for text.
+**Delivered** (`dc4ba5c`)
+- `crates/pivot-theme/src/table.rs` (new, `pub mod table` from `pivot-theme`): `TableThemeId` with 6 stable-id presets — `ClassicGrid`, `Ledger` (zebra/totals), `Minimal`, `Executive` (accent), `CompactDense`, `HighContrast` — plus `RoleStyle{fill,text,strong,grid_line}` and `TableStyle::resolve(id,brightness,tokens)` resolving roles for title/stub_head/col_header/row_header/body/body_zebra/subtotal/grand_total/footer/notes/selection/border, `zebra`, `row_height/header_height`. High Contrast table/brightness forced legible (black/white, yellow totals, cyan notes). Tests `theme_ids_stable`, `resolve_all_themes_and_brightnesses` (all ids × all brightness modes).
+- `crates/pivot-app/src/menus.rs`: `Format > Table Theme` submenu (6 presets, `format.theme` id params, checked state). `crates/pivot-app/src/app.rs`: `table_theme: TableThemeId` in session state, `format.theme` dispatch, menu check, `clear_layout` preserves theme; about/status updated. Theme stored independently of `PivotSpec`/`pivot_model` (switching theme does not trigger recompute).
+- `crates/pivot-app/src/pivot_grid.rs` + `crates/pivot-app/src/dock.rs`: grid resolves `TableStyle` per render from `(brightness, table_theme, Tokens)` and paints title/headers/body/zebra/subtotals/grand total/footer/notes/selection/border via role styles; Notes band styled distinctly; row/header heights come from theme (Compact Dense tighter). `reference/designcraft/` remains excluded.
 
 **Acceptance criteria (all must pass)**
-- [ ] **AC4.1 Gallery:** >= 6 predefined themes are selectable; switching themes updates the entire table (title, headers, stub-head, body/zebra, all footer bands) live without recomputing the pivot data.
-- [ ] **AC4.2 Role coverage:** every `ThemedTableModel` band/role (incl. stub-head and multiple footer bands) is visibly styled by the active theme; no band falls back to an unstyled/hard-coded default.
-- [ ] **AC4.3 Brightness coherence:** each theme remains legible under app Light and Dark modes; the High Contrast app mode (and/or High Contrast table theme) meets clear contrast (manual check recorded; no low-contrast text on totals/headers).
-- [ ] **AC4.4 Tokenized rendering:** the grid/table rendering path consumes resolved theme roles/tokens (code review/grep confirms no band-specific color literals outside theme definitions).
-- [ ] **AC4.5 Persistence in-session:** the selected theme is retained across pivot recomputes and spec changes within the session.
+- [~] **AC4.1 Gallery:** 6 predefined themes selectable from `Format > Table Theme`; switching updates the rendered table live without recomputing pivot data (theme is app/grid state, not recompute input). *Pending: manual visual sweep of all 6 themes on a representative pivot.*
+- [~] **AC4.2 Role coverage:** grid paints resolved roles for stub-head, column/row headers, body/zebra, subtotal, grand total, footer/notes bands and selection/border. *Pending: code review/visual check that every `ThemedTableModel` band/role is covered (including Notes span) and no band-specific literals leak outside theme definitions/grid role mapping.*
+- [~] **AC4.3 Brightness coherence:** themes resolved against all `Brightness` modes in tests; High Contrast forced legible. *Pending: manual contrast/legibility check under Light/Dark/High Contrast (record).*
+- [~] **AC4.4 Tokenized rendering:** pivot grid consumes `TableStyle`/`Tokens` roles (`role_style_for` -> resolved style) rather than per-cell hard-coded colors. *Pending: grep/review pass; minor literals may remain for resize affordances/copy status — acceptable only if outside band styling.*
+- [x] **AC4.5 Persistence in-session:** selected `table_theme` retained across pivot recomputes, spec changes, and layout clear within the session.
 
-**Dependencies** — Phase 3.
+**Dependencies** — Phase 3.  
+**Next:** manual QA (AC4.1-4.4), optional font weight/number-format theming, and move into **Phase 5** (SQLite/MySQL pushdown + credentials, decisions #2/#4) or **Phase 6** export parity (`rust_xlsxwriter`/`printpdf`+custom paginator/HTML over `ThemedTableModel`, decision #3) per priority.
 
 ---
 
