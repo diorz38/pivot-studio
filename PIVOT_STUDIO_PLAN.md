@@ -226,29 +226,28 @@ Support large data via database connectors with pushdown aggregation, and implem
 
 ---
 
-### Phase 6 — Export parity (XLSX, PDF, HTML)
+### Phase 6 — Export parity (XLSX, PDF, HTML) — *foundation landed*
 
 **Goal**  
 Export the pivot to XLSX, PDF, and HTML with the **same theme** and full polished structure (decision #3 for PDF).
 
-**Scope / deliverables** (decisions #2 xlsx write, #3)
-- **XLSX export via `rust_xlsxwriter`:** styled cells (merged header spans where needed, fills, fonts, borders, banding, number formats), typed numbers/dates where possible, stub-head text, and **multiple footer bands** as real styled rows.
-- **PDF export (decision #3, pure-Rust layout):** `printpdf` + custom deterministic table paginator in `pivot-export` over the `ThemedTableModel`. Supports pagination, **repeated header rows**, table title, and theme styling (fills/borders/text/number formatting as faithfully as the stack allows). No HTML-to-PDF dependency.
-- **HTML export:** semantic `<table>` (`<caption>`/title, `<thead>`, `<tbody>`, footer section(s) representing multiple footer bands) with inline/embedded CSS derived from the active theme.
-- All exporters consume the **`ThemedTableModel`** (parity invariant); run off the UI thread with progress/cancel.
+**Delivered (foundation, `9b7ed07`)**
+- `crates/pivot-export/src/{lib,html,xlsx,pdf}.rs`: exporters consume canonical `ThemedTableModel` (AC6 parity invariant) and resolve roles via `pivot_theme::table::TableStyle` (`ExportStyle { table_theme, brightness }`).
+- **HTML:** semantic `<table>` with `<caption>`/title, `<thead>`, `<tbody>`, `<tfoot>` footer bands, `data-role`/`data-band` attributes, inline role styles (fills/text/borders/indent) derived from the resolved theme (AC6.1/6.2 foundation).
+- **XLSX:** `rust_xlsxwriter` styled/merged cells for title/headers/body/footer bands (fills/fonts/borders/align/indent, numeric writes when parseable), freeze panes, column widths (AC6.1/6.2 foundation).
+- **PDF (decision #3, pure Rust):** `printpdf 0.7` + deterministic custom table paginator in `pivot-export` (A4 landscape, computed column widths, role fills/borders/text, title, repeated header rows, footer bands kept with pagination checks). No HTML-to-PDF (AC6.3 foundation; visual fidelity/pagination polish/manual QA pending).
+- **App/UI:** `File > Export` submenu (HTML/XLSX/PDF) in `crates/pivot-app/src/menus.rs`; `PivotApp::export_pivot` in `crates/pivot-app/src/app.rs` uses `rfd` save dialog and exports current `pivot_model` with active `table_theme`/`brightness`.
+- Tests (`pivot-export`): HTML structure/role assertions, XLSX non-empty write, PDF `%PDF-` smoke, extension dispatch for `.html/.xlsx/.pdf`.
 
 **Acceptance criteria (all must pass)**
-- [ ] **AC6.1 Parity of structure:** for a reference pivot (nested headers, stub-head text set, >= 2 footer bands, active filters reflected in title/meta), all three exports contain the same logical structure — title, stub-head, header hierarchy, body values, and each footer band in order.
-- [ ] **AC6.2 Theme fidelity (XLSX/HTML):** key theme roles (header fill/font weight, zebra, total/footer styling, stub-head) are present in the XLSX styles and HTML/CSS for the reference pivot (fixture-based assertions on generated files/markup).
-- [ ] **AC6.3 PDF (pure-Rust):** PDF is generated using the `printpdf` + custom paginator path (no HTML-to-PDF). A multi-page reference export paginates without clipping content and **repeats header rows** on subsequent pages; title and footer bands appear per the model (manual visual check recorded).
-- [ ] **AC6.4 Dynamic content:** changing a filter/spec regenerates exports whose dynamic title/column/footer text matches the on-screen model.
-- [ ] **AC6.5 UX:** export runs off the UI thread with progress and cancel; cancel leaves no corrupted partial file at the target path (writes to temp then moves, or equivalent safe behavior).
-- [ ] **AC6.6 Tests:** automated tests validate XLSX/HTML structure (and selected style attributes) for the reference fixture; PDF generation smoke-tests produce a valid, non-empty PDF for the fixture.
+- [~] **AC6.1 Parity of structure:** HTML exporter emits title/stub-head/header hierarchy/body/footer bands in order (`<caption>/<thead>/<tbody>/<tfoot>` + `data-role`/band attrs, unit test). XLSX/PDF render the same `ThemedTableModel` sections; fixture-based cross-format structural assertions and manual comparison still needed.
+- [~] **AC6.2 Theme fidelity (XLSX/HTML):** role fills/text/borders/weight/indent/total styling derived from resolved `TableStyle` are emitted (HTML inline styles; XLSX `Format` colors/bold/borders/indent). Automated style-attribute fixture assertions still needed.
+- [~] **AC6.3 PDF (pure-Rust):** uses `printpdf` + custom paginator (no HTML-to-PDF). Repeats header rows on page breaks and renders title/footer bands (foundation). Multi-page reference export and manual visual QA (no clipping, header repeat, band placement, span/Unicode fidelity) still required.
+- [~] **AC6.4 Dynamic content:** export consumes the current resolved `pivot_model` (which reflects spec/filter/theme/title state). End-to-end “change filter/spec → export differs” test pending.
+- [~] **AC6.5 UX:** export is initiated from UI (file dialog) and reports success/failure in status. Runs on UI action (model already computed); background/progress/cancel + temp-then-move safe write for long exports not yet implemented.
+- [~] **AC6.6 Tests:** automated tests validate HTML structure/roles and produce valid non-empty XLSX/PDF for a reference fixture (`pivot-export` 4 tests). Broader reference-fixture assertions pending.
 
 **Dependencies** — Phases 3–4 (polished model + themes). Phase 5 not required.
-
----
-
 ### Phase 7 — Workspace format (`.pivot` zip), hardening & packaging
 
 **Goal**  
