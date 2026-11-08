@@ -642,6 +642,42 @@ mod tests {
     }
 
     #[test]
+    fn ac2_2_multi_level_subtotals() {
+        let t = DataTable {
+            columns: vec![
+                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "City".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+            ],
+            rows: vec![
+                vec![Value::String("East".into()), Value::String("NY".into()), Value::Integer(100)],
+                vec![Value::String("East".into()), Value::String("NY".into()), Value::Integer(50)],
+                vec![Value::String("East".into()), Value::String("Boston".into()), Value::Integer(70)],
+                vec![Value::String("West".into()), Value::String("LA".into()), Value::Integer(200)],
+            ],
+            source: Some("test".into()),
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region"), FieldRef::new("City")],
+            values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true },
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let b = body_text(&m);
+        // Detail rows (row-header suppression applies; row-key order is engine-defined/sorted)
+        assert!(b.iter().any(|r| r[1] == "NY" && r[2] == "150"), "NY row missing: {:?}", b);
+        assert!(b.iter().any(|r| r[1] == "Boston" && r[2] == "70"));
+        assert!(b.iter().any(|r| r[1] == "LA" && r[2] == "200"));
+        // Level-1 subtotal rows label "<prefix> Subtotal" in first row-header col
+        assert!(b.iter().any(|r| r[0] == "East Subtotal" && r[2] == "220"), "East subtotal missing: {:?}", b);
+        assert!(b.iter().any(|r| r[0] == "West Subtotal" && r[2] == "200"), "West subtotal missing: {:?}", b);
+        // Grand total = 420
+        let gt = m.footer_bands.iter().find(|f| matches!(f.kind, FooterBandKind::GrandTotal)).unwrap();
+        assert!(gt.cells.iter().any(|c| c.text == "420"));
+    }
+
+    #[test]
     fn ac3_2_footer_bands() {
         let t = sample_table();
         let spec = PivotSpec {

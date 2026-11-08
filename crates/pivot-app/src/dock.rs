@@ -208,18 +208,47 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             ui.add_space(6.0);
             egui::ScrollArea::vertical().id_salt("layout_scroll").auto_shrink([false, false]).show(ui, |ui| {
                 ui.label(RichText::new("Rows").strong().color(t.text_strong));
-                for f in &app.pivot_spec.rows { ui.label(RichText::new(&f.name).color(t.text)); }
-                if app.pivot_spec.rows.is_empty() { ui.label(RichText::new("(none)").color(t.text_disabled)); }
+                let mut remove_row: Option<usize> = None;
+                let mut move_row: Option<(usize, usize)> = None;
+                let row_len = app.pivot_spec.rows.len();
+                for (i, f) in app.pivot_spec.rows.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&f.name).color(t.text));
+                        if ui.small_button("x").on_hover_text("Remove from Rows").clicked() { remove_row = Some(i); }
+                        if i > 0 && ui.small_button("^").clicked() { move_row = Some((i, i - 1)); }
+                        if i + 1 < row_len && ui.small_button("v").clicked() { move_row = Some((i, i + 1)); }
+                    });
+                }
+                if row_len == 0 { ui.label(RichText::new("(none)").color(t.text_disabled)); }
+                if let Some(i) = remove_row { app.remove_row_field(i); }
+                else if let Some((a, b)) = move_row { app.move_row_field(a, b); }
                 ui.add_space(4.0);
                 ui.label(RichText::new("Columns").strong().color(t.text_strong));
-                for f in &app.pivot_spec.columns { ui.label(RichText::new(&f.name).color(t.text)); }
-                if app.pivot_spec.columns.is_empty() { ui.label(RichText::new("(none)").color(t.text_disabled)); }
+                let mut remove_col: Option<usize> = None;
+                let mut move_col: Option<(usize, usize)> = None;
+                let col_len = app.pivot_spec.columns.len();
+                for (i, f) in app.pivot_spec.columns.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&f.name).color(t.text));
+                        if ui.small_button("x").on_hover_text("Remove from Columns").clicked() { remove_col = Some(i); }
+                        if i > 0 && ui.small_button("^").clicked() { move_col = Some((i, i - 1)); }
+                        if i + 1 < col_len && ui.small_button("v").clicked() { move_col = Some((i, i + 1)); }
+                    });
+                }
+                if col_len == 0 { ui.label(RichText::new("(none)").color(t.text_disabled)); }
+                if let Some(i) = remove_col { app.remove_col_field(i); }
+                else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
                 ui.add_space(4.0);
                 ui.label(RichText::new("Values").strong().color(t.text_strong));
-                for v in &app.pivot_spec.values {
-                    ui.label(RichText::new(format!("{}: {}", v.aggregate.label(), v.field.name)).color(t.text));
+                let mut remove_val: Option<usize> = None;
+                for (i, v) in app.pivot_spec.values.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}: {}", v.aggregate.label(), v.field.name)).color(t.text));
+                        if ui.small_button("x").on_hover_text("Remove value").clicked() { remove_val = Some(i); }
+                    });
                 }
                 if app.pivot_spec.values.is_empty() { ui.label(RichText::new("(add Sum/Count/Avg from Fields)").color(t.text_disabled)); }
+                if let Some(i) = remove_val { app.remove_value_field(i); }
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new("Options").strong().color(t.text_strong));

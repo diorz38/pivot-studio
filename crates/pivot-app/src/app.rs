@@ -312,6 +312,50 @@ impl PivotApp {
         });
         self.request_pivot_recompute();
     }
+    pub fn remove_row_field(&mut self, idx: usize) {
+        if idx < self.pivot_spec.rows.len() {
+            self.pivot_spec.rows.remove(idx);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn remove_col_field(&mut self, idx: usize) {
+        if idx < self.pivot_spec.columns.len() {
+            self.pivot_spec.columns.remove(idx);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn remove_value_field(&mut self, idx: usize) {
+        if idx < self.pivot_spec.values.len() {
+            self.pivot_spec.values.remove(idx);
+            if self.pivot_spec.values.is_empty() {
+                self.pivot_model = None;
+                self.status = "Values cleared. Add a Values field to compute a pivot.".to_string();
+            } else {
+                self.request_pivot_recompute();
+            }
+        }
+    }
+
+    pub fn move_row_field(&mut self, from: usize, to: usize) {
+        let len = self.pivot_spec.rows.len();
+        if from < len && to < len && from != to {
+            let item = self.pivot_spec.rows.remove(from);
+            self.pivot_spec.rows.insert(to, item);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn move_col_field(&mut self, from: usize, to: usize) {
+        let len = self.pivot_spec.columns.len();
+        if from < len && to < len && from != to {
+            let item = self.pivot_spec.columns.remove(from);
+            self.pivot_spec.columns.insert(to, item);
+            self.request_pivot_recompute();
+        }
+    }
+
     pub fn clear_layout(&mut self) {
         self.pivot_spec.rows.clear();
         self.pivot_spec.columns.clear();
