@@ -141,4 +141,24 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn loads_50k_rows_synthetic() {
+        // AC1.5: synthetic dataset of 50,000 rows (several columns) loads and is navigable.
+        let mut csv = String::with_capacity(2_000_000);
+        csv.push_str("id,category,amount,active,when\n");
+        for i in 0..50_000u32 {
+            let cat = if i % 3 == 0 { "A" } else if i % 3 == 1 { "B" } else { "C" };
+            let active = if i % 2 == 0 { "true" } else { "false" };
+            // simple deterministic date
+            let day = (i % 28) + 1;
+            csv.push_str(&format!("{i},{cat},{:.2},{active},2024-01-{day:02}\n", (i as f64) * 0.5));
+        }
+        let t = load_csv_from_str(&csv, b',', true, Some("synthetic://50k".to_string())).unwrap();
+        assert_eq!(t.row_count(), 50_000);
+        assert_eq!(t.column_count(), 5);
+        assert_eq!(t.columns[0].effective_type(), DataType::Integer);
+        assert_eq!(t.columns[1].effective_type(), DataType::String);
+        assert_eq!(t.columns[2].effective_type(), DataType::Decimal);
+    }
 }
