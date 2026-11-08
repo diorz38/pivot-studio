@@ -1,0 +1,11 @@
+[package]
+name = "pivot-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+pivot-core = { workspace = true }
+pivot-theme = { workspace = true }

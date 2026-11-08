@@ -1,0 +1,15 @@
+﻿# Reference material (DesignCraft) - kept locally, not versioned in this repo
+/reference/
+
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

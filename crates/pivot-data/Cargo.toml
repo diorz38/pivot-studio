@@ -1,0 +1,10 @@
+[package]
+name = "pivot-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+pivot-core = { workspace = true }

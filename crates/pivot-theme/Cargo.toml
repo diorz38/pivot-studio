@@ -1,0 +1,9 @@
+[package]
+name = "pivot-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+egui = { workspace = true }
+serde = { workspace = true }
