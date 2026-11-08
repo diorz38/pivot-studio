@@ -1,8 +1,15 @@
 //! Pivot spec, computation engine, and the canonical themed table model.
 //! UI-agnostic; data model types are shared by ingest/UI/pivot phases.
 
+pub mod model;
+pub mod pivot;
+pub mod spec;
+
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+pub use model::{Cell, CellRole, FooterBand, FooterBandKind, ThemedTableModel};
+pub use spec::{Aggregate, FieldRef, Filter, FilterOp, PivotSpec, SubtotalConfig, ValueField};
 
 /// Inferred/declared column data type (Phase 1, AC1.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
