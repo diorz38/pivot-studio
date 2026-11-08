@@ -46,7 +46,7 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                 caption_buttons(app, ui);
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("Phase 0 shell - {}", app.brightness.label()))
+                    egui::RichText::new(format!("Phase 1 - {}", app.brightness.label()))
                         .color(t.text_muted)
                         .size(11.5),
                 );
@@ -136,7 +136,7 @@ fn caption_buttons(app: &mut PivotApp, ui: &mut egui::Ui) {
     ui.spacing_mut().item_spacing.x = spacing;
 }
 
-pub fn status_bar(app: &PivotApp, ui: &mut egui::Ui) {
+pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     egui::Frame::new()
         .fill(t.status_bar)
@@ -144,12 +144,26 @@ pub fn status_bar(app: &PivotApp, ui: &mut egui::Ui) {
         .inner_margin(egui::Margin::symmetric(10, 4))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&app.status).color(t.text).size(12.0));
+                let status = if let Some(load) = &app.loading {
+                    load.progress.clone()
+                } else {
+                    app.status.clone()
+                };
+                ui.label(egui::RichText::new(status).color(t.text).size(12.0));
+                if app.loading.is_some() {
+                    ui.add_space(8.0);
+                    ui.spinner();
+                    if ui.small_button("Cancel").clicked() {
+                        app.cancel_load();
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format!(
-                            "Brightness: {} | Rows: 0 | Cols: 0",
-                            app.brightness.label()
+                            "Brightness: {} | Rows: {} | Cols: {}",
+                            app.brightness.label(),
+                            app.row_count(),
+                            app.col_count()
                         ))
                         .color(t.text_muted)
                         .size(12.0),

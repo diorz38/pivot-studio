@@ -1,9 +1,10 @@
-//! Docked, resizable panel layout (DesignCraft docking feel, simplified for Phase 0).
+//! Docked, resizable panel layout (DesignCraft docking feel, Phase 1).
 //! Home page: open saved project / import CSV, Excel, DBF / connect to a new DB.
-//! Worksheet: docked pivot workspace shown after data is ready (Phase 0 placeholder).
+//! Worksheet: docked pivot workspace with field list populated from loaded data.
 
 use crate::app::PivotApp;
 use egui::{RichText, Sense, Vec2};
+use pivot_core::DataType;
 use pivot_theme::Tokens;
 use serde_json::Value;
 
@@ -40,56 +41,39 @@ fn home_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                     );
                     ui.add_space(26.0);
 
+                    if app.loading.is_some() {
+                        egui::Frame::new()
+                            .fill(t.panel)
+                            .stroke(egui::Stroke::new(1.0_f32, t.accent))
+                            .inner_margin(egui::Margin::same(10))
+                            .corner_radius(6.0)
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    let msg = app
+                                        .loading
+                                        .as_ref()
+                                        .map(|l| l.progress.clone())
+                                        .unwrap_or_else(|| "Loading...".to_string());
+                                    ui.label(RichText::new(msg).color(t.text));
+                                    if ui.button("Cancel").clicked() {
+                                        app.cancel_load();
+                                    }
+                                });
+                            });
+                        ui.add_space(14.0);
+                    }
+
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(14.0, 14.0);
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Open Project",
-                            "Open a saved .pivot workspace.",
-                            "file.open",
-                        );
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Import CSV",
-                            "Load a CSV/TSV file into a worksheet.",
-                            "file.import",
-                        );
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Import Excel",
-                            "Load an .xlsx workbook.",
-                            "file.import",
-                        );
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Import DBF",
-                            "Load a dBASE (.dbf) file.",
-                            "file.import",
-                        );
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Connect Database",
-                            "Create a new SQLite or MySQL connection.",
-                            "data.connect",
-                        );
-                        action_card(
-                            ui,
-                            app,
-                            &t,
-                            "Open Worksheet",
-                            "View the current worksheet layout (Phase 0).",
-                            "nav.worksheet",
-                        );
+                        action_card(ui, app, &t, "Open Project", "Open a saved .pivot workspace.", "file.open");
+                        action_card(ui, app, &t, "Import CSV", "Load a CSV/TSV file into a worksheet.", "file.import.csv");
+                        action_card(ui, app, &t, "Import Excel", "Load an .xlsx workbook (first sheet).", "file.import.xlsx");
+                        action_card(ui, app, &t, "Import DBF", "Load a dBASE (.dbf) file.", "file.import.dbf");
+                        action_card(ui, app, &t, "Connect Database", "Create a new SQLite or MySQL connection (Phase 5).", "data.connect");
+                        if app.table.is_some() {
+                            action_card(ui, app, &t, "Open Worksheet", "View the loaded dataset and fields.", "nav.worksheet");
+                        }
                     });
 
                     ui.add_space(24.0);
@@ -99,11 +83,7 @@ fn home_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                         .inner_margin(egui::Margin::same(12))
                         .corner_radius(6.0)
                         .show(ui, |ui| {
-                            ui.label(
-                                RichText::new("Recent projects")
-                                    .strong()
-                                    .color(t.text_strong),
-                            );
+                            ui.label(RichText::new("Recent projects").strong().color(t.text_strong));
                             ui.add_space(6.0);
                             ui.label(
                                 RichText::new("No recent projects yet. Project history arrives in a later phase.")
@@ -126,11 +106,7 @@ fn action_card(
     let size = Vec2::new(250.0, 96.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let response = response.on_hover_text(detail);
-    let bg = if response.hovered() {
-        t.hover
-    } else {
-        t.panel
-    };
+    let bg = if response.hovered() { t.hover } else { t.panel };
     let stroke = if response.hovered() {
         egui::Stroke::new(1.0_f32, t.accent)
     } else {
@@ -161,7 +137,6 @@ fn action_card(
 fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
 
-    // Bottom strip for Filters/Settings (resizable) - shown via a bottom panel region.
     egui::TopBottomPanel::bottom("dock_bottom")
         .resizable(true)
         .default_height(160.0)
@@ -176,17 +151,15 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             panel_header(ui, "Filters / Settings", &t);
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new(
-                    "Placeholder: report filters, value formatting, and view settings (Phase 2+).",
-                )
-                .color(t.text_muted),
+                RichText::new("Placeholder: report filters, value formatting, and view settings (Phase 2+).")
+                    .color(t.text_muted),
             );
         });
 
     egui::SidePanel::left("dock_left")
         .resizable(true)
-        .default_width(240.0)
-        .min_width(160.0)
+        .default_width(280.0)
+        .min_width(180.0)
         .frame(
             egui::Frame::new()
                 .fill(t.panel)
@@ -196,15 +169,81 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
         .show_inside(ui, |ui| {
             panel_header(ui, "Sources / Fields", &t);
             ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(
-                    "Placeholder: import CSV/XLSX/DBF/SQLite/MySQL and assign fields to Rows, Columns, Values, Filters.",
-                )
-                .color(t.text_muted),
-            );
+            if let Some(name) = &app.source_name {
+                ui.label(RichText::new(format!("Source: {name}")).color(t.text).size(12.0));
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Import CSV").clicked() {
+                    let ctx = ui.ctx().clone();
+                    app.dispatch("file.import.csv", &Value::Null, &ctx);
+                }
+                if ui.button("Import Excel").clicked() {
+                    let ctx = ui.ctx().clone();
+                    app.dispatch("file.import.xlsx", &Value::Null, &ctx);
+                }
+                if ui.button("Import DBF").clicked() {
+                    let ctx = ui.ctx().clone();
+                    app.dispatch("file.import.dbf", &Value::Null, &ctx);
+                }
+            });
+            if app.loading.is_some() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    let msg = app.loading.as_ref().map(|l| l.progress.clone()).unwrap_or_default();
+                    ui.label(RichText::new(msg).color(t.text_muted).size(11.5));
+                    if ui.small_button("Cancel").clicked() {
+                        app.cancel_load();
+                    }
+                });
+            }
             ui.add_space(8.0);
             ui.separator();
-            ui.label(egui::RichText::new("No dataset loaded.").color(t.text_disabled));
+            if app.table.is_some() {
+                let col_count = app.table.as_ref().map(|t| t.column_count()).unwrap_or(0);
+                let cols: Vec<(usize, String, DataType)> = app
+                    .table
+                    .as_ref()
+                    .map(|t| {
+                        t.columns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| (i, c.name.clone(), c.effective_type()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                ui.label(RichText::new(format!("Fields ({col_count})")).strong().color(t.text_strong));
+                ui.add_space(4.0);
+                let mut change: Option<(usize, DataType)> = None;
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    for (i, name, current) in &cols {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(name).color(t.text).size(12.0));
+                            let mut effective = *current;
+                            let before = effective;
+                            egui::ComboBox::from_id_salt(("type", *i))
+                                .selected_text(format!("{effective:?}"))
+                                .width(95.0)
+                                .show_ui(ui, |ui| {
+                                    for dt in [
+                                        DataType::String, DataType::Integer, DataType::Decimal,
+                                        DataType::Boolean, DataType::Date, DataType::DateTime,
+                                    ] {
+                                        ui.selectable_value(&mut effective, dt, format!("{dt:?}"));
+                                    }
+                                });
+                            if effective != before {
+                                change = Some((*i, effective));
+                            }
+                        });
+                    }
+                });
+                if let Some((i, dt)) = change {
+                    app.reinterpret_column(i, dt);
+                }
+            } else {
+                ui.label(RichText::new("No dataset loaded. Import a file to see fields.").color(t.text_disabled));
+            }
         });
 
     egui::SidePanel::right("dock_right")
@@ -221,10 +260,8 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             panel_header(ui, "Layout / Properties", &t);
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new(
-                    "Placeholder: pivot field wells, theme picker, stub-head text, footer bands (Phase 2-4).",
-                )
-                .color(t.text_muted),
+                RichText::new("Placeholder: pivot field wells, theme picker, stub-head text, footer bands (Phase 2-4).")
+                    .color(t.text_muted),
             );
         });
 
@@ -241,66 +278,69 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
 }
 
 fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
-    ui.label(
-        egui::RichText::new(title)
-            .strong()
-            .color(t.text_strong)
-            .size(13.0),
-    );
+    ui.label(RichText::new(title).strong().color(t.text_strong).size(13.0));
 }
 
 fn grid_placeholder(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
-    ui.label(
-        egui::RichText::new("Pivot Grid")
-            .strong()
-            .color(t.text_strong)
-            .size(16.0),
-    );
+    ui.label(RichText::new("Pivot Grid / Data Preview").strong().color(t.text_strong).size(16.0));
     ui.add_space(6.0);
     ui.label(
-        egui::RichText::new(
-            "Center workspace: the themed pivot table will render here (Phase 2+). \
-             Export (XLSX/PDF/HTML) will render the same themed table model.",
-        )
-        .color(t.text_muted),
+        RichText::new("Phase 1: loaded data preview (first rows). Pivot computation and themed table arrive in Phase 2+.")
+            .color(t.text_muted),
     );
-    ui.add_space(16.0);
+    ui.add_space(12.0);
 
-    // A small themed sample "table" using tokens (demonstrates token usage, no literals).
-    egui::Frame::new()
-        .fill(t.grid_body)
-        .stroke(egui::Stroke::new(1.0_f32, t.grid_line))
-        .inner_margin(egui::Margin::same(0))
-        .show(ui, |ui| {
-            egui::Grid::new("phase0_preview_grid")
-                .striped(false)
-                .min_col_width(120.0)
-                .show(ui, |ui| {
-                    header_cell(ui, "Stub Head (col 1)", t);
-                    header_cell(ui, "Column A", t);
-                    header_cell(ui, "Column B", t);
-                    ui.end_row();
-
-                    body_cell(ui, "Row 1", t, true);
-                    body_cell(ui, "-", t, false);
-                    body_cell(ui, "-", t, false);
-                    ui.end_row();
-
-                    body_cell(ui, "Row 2", t, true);
-                    body_cell(ui, "-", t, false);
-                    body_cell(ui, "-", t, false);
-                    ui.end_row();
+    if let Some(table) = &app.table {
+        let preview_rows = table.row_count().min(200);
+        egui::Frame::new()
+            .fill(t.grid_body)
+            .stroke(egui::Stroke::new(1.0_f32, t.grid_line))
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
+                    egui::Grid::new("data_preview_grid")
+                        .striped(false)
+                        .min_col_width(100.0)
+                        .show(ui, |ui| {
+                            for col in &table.columns {
+                                header_cell(ui, &col.name, t);
+                            }
+                            ui.end_row();
+                            for r in 0..preview_rows {
+                                for c in 0..table.column_count() {
+                                    let text = table.get(r, c).map(|v| v.as_display()).unwrap_or_default();
+                                    body_cell(ui, &text, t, false);
+                                }
+                                ui.end_row();
+                            }
+                        });
                 });
-        });
-
-    ui.add_space(10.0);
-    ui.label(
-        egui::RichText::new(format!(
-            "Ready. Use View -> Brightness to switch modes (current: {}).",
-            app.brightness.label()
-        ))
-        .color(t.text),
-    );
+            });
+        if table.row_count() > preview_rows {
+            ui.add_space(6.0);
+            ui.label(RichText::new(format!("Showing {preview_rows} of {} rows.", table.row_count())).color(t.text_muted).size(11.5));
+        }
+    } else {
+        egui::Frame::new()
+            .fill(t.grid_body)
+            .stroke(egui::Stroke::new(1.0_f32, t.grid_line))
+            .inner_margin(egui::Margin::same(0))
+            .show(ui, |ui| {
+                egui::Grid::new("phase0_preview_grid")
+                    .striped(false)
+                    .min_col_width(120.0)
+                    .show(ui, |ui| {
+                        header_cell(ui, "Stub Head (col 1)", t);
+                        header_cell(ui, "Column A", t);
+                        header_cell(ui, "Column B", t);
+                        ui.end_row();
+                        body_cell(ui, "No data", t, true);
+                        body_cell(ui, "-", t, false);
+                        body_cell(ui, "-", t, false);
+                        ui.end_row();
+                    });
+            });
+    }
 }
 
 fn header_cell(ui: &mut egui::Ui, text: &str, t: &Tokens) {
@@ -309,7 +349,7 @@ fn header_cell(ui: &mut egui::Ui, text: &str, t: &Tokens) {
         .stroke(egui::Stroke::new(1.0_f32, t.grid_line))
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).strong().color(t.text_strong));
+            ui.label(RichText::new(text).strong().color(t.text_strong));
         });
 }
 
@@ -321,6 +361,6 @@ fn body_cell(ui: &mut egui::Ui, text: &str, t: &Tokens, row_header: bool) {
         .stroke(egui::Stroke::new(1.0_f32, t.grid_line))
         .inner_margin(egui::Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).color(color));
+            ui.label(RichText::new(text).color(color));
         });
 }
