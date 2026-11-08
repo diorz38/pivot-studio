@@ -503,6 +503,26 @@ mod tests {
     }
 
     #[test]
+    fn ac2_1c_multiple_values() {
+        let t = sample_table();
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region")],
+            values: vec![
+                ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
+                ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
+            ],
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false },
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let b = body_text(&m);
+        let east = b.iter().find(|r| r.first().map(|s| s.as_str()) == Some("East")).unwrap();
+        assert_eq!(east, &vec!["East".to_string(), "250".to_string(), "2".to_string()]);
+        let west = b.iter().find(|r| r.first().map(|s| s.as_str()) == Some("West")).unwrap();
+        assert_eq!(west, &vec!["West".to_string(), "250".to_string(), "2".to_string()]);
+    }
+
+    #[test]
     fn ac2_1d_filter() {
         let t = sample_table();
         let spec = PivotSpec {
@@ -575,6 +595,50 @@ mod tests {
         let m2 = compute(&t, &spec2);
         assert_eq!(m2.title, "Pinned");
         assert!(m2.title_pinned);
+    }
+
+    #[test]
+    fn ac2_4_50k_recompute_budget() {
+        use std::time::Instant;
+        let mut rows = Vec::with_capacity(50_000);
+        let regions = ["East", "West", "North", "South"];
+        let products = ["A", "B", "C", "D", "E"];
+        for i in 0..50_000i64 {
+            rows.push(vec![
+                Value::String(regions[(i as usize) % regions.len()].to_string()),
+                Value::String(products[(i as usize) % products.len()].to_string()),
+                Value::Integer((i % 1000) + 1),
+                Value::Integer((i % 10) + 1),
+            ]);
+        }
+        let t = DataTable {
+            columns: vec![
+                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Product".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "Qty".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+            ],
+            rows,
+            source: Some("synthetic-50k".into()),
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region")],
+            columns: vec![FieldRef::new("Product")],
+            values: vec![
+                ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
+                ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
+            ],
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true },
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let m = compute(&t, &spec);
+        let elapsed = start.elapsed();
+        eprintln!("AC2.4 50k recompute: {:?} (body rows={}, footer bands={})", elapsed, m.body_rows.len(), m.footer_bands.len());
+        assert!(!m.body_rows.is_empty());
+        assert!(m.footer_bands.iter().any(|f| matches!(f.kind, FooterBandKind::GrandTotal)));
+        // Debug budget: generous 10s to avoid flakiness; record in plan. Release target < few seconds.
+        assert!(elapsed.as_secs() < 10, "50k pivot recompute took too long: {:?}", elapsed);
     }
 
     #[test]

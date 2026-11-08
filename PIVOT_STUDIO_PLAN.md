@@ -1,6 +1,6 @@
 # Pivot Studio — Comprehensive Product & Implementation Plan (Phased)
 
-> **Status:** in progress — **Phase 0 bootstrapped** (`9cfb9fe`, `013a2f9`), **Phase 1 data ingest foundation + UI landed** (`971b5ad`, `c303259`, `960184c`, `ed241db`, `729b471`). Verified on Windows (build/tests/run). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).  
+> **Status:** in progress — **Phase 0 bootstrapped** (`9cfb9fe`, `013a2f9`), **Phase 1 data ingest + UI** (`971b5ad`, `c303259`, `960184c`, `ed241db`, `729b471`), **Phase 2 pivot engine + themed model + field-well/grid UI** (`a6510d9`, `32cc369`). Verified on Windows (`cargo test --workspace` green). macOS/Linux build + full manual QA pending. **Date drafted:** 2026-11-08 (Asia/Jakarta).  
 > **Decision:** Option 1 — keep the current contents of this folder as **UI/reference material**, then build a new desktop pivot application **from scratch**. No functionality from the current codebase is carried over except *design patterns* (layout, menu, color theme) studied as reference.  
 > **UI stack (decision #1):** **Rust + `egui/eframe` 0.31** (Phase 0 baseline; DesignCraft reference uses egui 0.37 fork — API differences handled), using **DesignCraft** as the UI reference for theme/brightness tokens, menu/chrome structure, and docking feel.  
 > **Reference codebase:** preserved at `reference/designcraft/` (git-excluded, not part of Pivot Studio build). Key UI reference files: `reference/designcraft/crates/ui-egui/src/theme.rs`, `reference/designcraft/crates/ui-egui/src/menus.rs`, `reference/designcraft/crates/ui-egui/src/app.rs`, `reference/designcraft/apps/designcraft/src/main.rs`, `reference/designcraft/crates/ui-egui/src/chrome/*`, `reference/designcraft/crates/ui-egui/src/dock.rs`.
@@ -131,25 +131,25 @@ Load file-based sources into a typed in-memory table and expose schema/fields to
 
 ---
 
-### Phase 2 — Pivot engine (in-memory) & basic grid
+### Phase 2 — Pivot engine (in-memory) & basic grid — *foundation landed*
 
 **Goal**  
 Define and compute pivots in memory from the loaded table and render a correct, interactive grid.
 
-**Scope / deliverables**
-- `PivotSpec` in `pivot-core`: **Rows** (multi-level, order), **Columns** (0..n, pivoted), **Values** (field + aggregate + display name/format), **Filters** (include/exclude, basic operators). Aggregates: Sum, Count, Count Distinct, Average, Min, Max.
-- In-memory pivot computation → result structure (row/column headers, body values) with subtotals per row level and a grand total (configurable on/off).
-- Field well UI (assign to Rows/Columns/Values/Filters) + pivot recompute on change (off the UI thread for non-trivial work).
-- Basic grid: frozen header rows/cols, scroll, resizable columns, selection/copy.
+**Delivered** (`a6510d9`, `32cc369`)
+- `crates/pivot-core/src/{spec,model,pivot}.rs`: `PivotSpec` (rows/columns/values/filters, `SubtotalConfig`, editable `stub_head`, `title_override`), aggregates `Sum,Count,CountDistinct,Average,Min,Max` (`ValueField`/`FieldRef`), filter ops (Include/Exclude/Equals/NotEquals). Canonical UI-agnostic `ThemedTableModel` (title/title_pinned, `row_header_cols`, header/body rows of `Cell{role,colspan,rowspan,indent}`, ordered `FooterBand`s incl. GrandTotal+Notes). `pivot::compute` groups in-memory, computes row/col pivots, row subtotals per prefix (with column-pivot prefix subtotals), grand total, auto title (`vals by rows [by cols]`) with pin, notes footer (`Source|Rows|Filters`). Null handling: Count counts rows; CountDistinct counts distinct display values; Sum/Avg/Min/Max ignore null/non-numeric (Avg over non-null numeric count).
+- `crates/pivot-core/src/lib.rs`: exports modules/types. Tests (10): `ac2_1a_single_row_sum`, `ac2_1b_row_column_pivot`, `ac2_1c_multiple_values`, `ac2_1d_filter`, `ac2_1e_aggregates_and_nulls` (West Qty `[Null,5]`: Count=2,Avg=5,Min=5,Max=5), `ac2_1e_count_distinct`, `ac2_4_50k_recompute_budget` (~307ms Windows debug), `ac3_1_stub_head_and_3_3_title`, `ac3_2_footer_bands`, plus `coerce_and_override_reinterpret`.
+- `crates/pivot-app/src/{app,chrome,dock,menus}.rs`: `pivot_spec`/`pivot_model` state, background recompute thread + `mpsc`/cancel (`request_pivot_recompute`, needs >=1 value), field-well actions (+Row/+Col/Sum/Count/Avg/Min/Max) and type override, Layout panel (Rows/Columns/Values, Clear/Recompute, row-subtotals/grand-total toggles, stub-head edit triggers recompute), center renders `ThemedTableModel` (title, header/body/footer bands) or data preview; status shows computing spinner/cancel.
 
 **Acceptance criteria (all must pass)**
-- [ ] **AC2.1 Correctness:** for a fixed fixture dataset, computed results for (a) single row + sum, (b) row+column pivot (2 dimensions), (c) multiple values, (d) filter applied, and (e) count/count-distinct/avg/min/max match independently verified expected outputs (golden/unit tests).
-- [ ] **AC2.2 Subtotals/totals:** subtotals per enabled row level and grand total render and are numerically correct for the filtered domain; toggling them updates the result.
-- [ ] **AC2.3 Nulls/types:** null/empty handling per aggregate is explicit and tested (e.g. sum ignores nulls, count behavior documented) with no panic on mixed/missing data.
-- [ ] **AC2.4 Interactivity:** changing a field assignment or filter recomputes and updates the grid; on the 50k-row in-memory dataset a representative pivot recomputes within an acceptable interactive budget (measured and recorded, target sub-second to a few seconds; never freezes the UI).
-- [ ] **AC2.5 Grid UX:** headers remain visible while scrolling (frozen); columns are resizable; a selection can be copied as text/TSV.
+- [~] **AC2.1 Correctness:** golden/unit tests cover (a) single row+sum, (b) row+column pivot (2 dimensions), (c) multiple values, (d) filter, (e) count/count-distinct/avg/min/max incl. null behavior (`ac2_1c_multiple_values`). *Pending: recorded multi-dimension/multi-level subtotal fixture set.*
+- [~] **AC2.2 Subtotals/totals:** engine computes row subtotals per enabled level and grand total; UI toggles trigger recompute. *Pending: explicit numeric golden for multi-level subtotals + column-subtotal edge cases and rendered-order verification.*
+- [x] **AC2.3 Nulls/types:** null/empty handling explicit in `Accum` and tested (`ac2_1e_aggregates_and_nulls`); no panic on missing/mixed data (filters/value access use fallbacks). *Document Count-vs-Sum/Avg semantics in UI help as needed.*
+- [~] **AC2.4 Interactivity:** recompute runs off the UI thread. Measured Windows debug (`cargo test -p pivot-core ac2_4_50k -- --nocapture`, 50k rows, 2 row/col dims, 2 values, subtotals+grand total): ~307ms body rows=4/footer bands=2 (well within interactive budget; release should be faster). *Pending: in-app manual responsiveness/50k UI load check.*
+- [~] **AC2.5 Grid UX:** scrollable grid and model render in place. *Pending: frozen/sticky headers, column resize, selection/copy as text/TSV; egui::Grid lacks native colspan/rowspan (Phase 4/custom painter can improve).*
 
-**Dependencies** — Phase 1.
+**Dependencies** — Phase 1.  
+**Next:** AC2.1c multiple values + richer golden fixtures; AC2.2 multi-level subtotal goldens; AC2.4 measure 50k recompute; AC2.5 frozen headers/resize/copy; field-well remove/reorder UX; then update for Phase 3 polish/export foundations.
 
 ---
 
