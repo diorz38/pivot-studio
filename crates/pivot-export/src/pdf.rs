@@ -1,4 +1,4 @@
-﻿use crate::{ExportError, ExportStyle, Result};
+use crate::{ExportError, ExportStyle, Result};
 use pivot_core::{Cell, CellRole, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 use printpdf::path::PaintMode;
@@ -7,7 +7,6 @@ use printpdf::{
     PdfLayerReference, PdfPageIndex, Rect, Rgb,
 };
 use std::collections::HashSet;
-use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 
