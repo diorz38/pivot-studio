@@ -3,7 +3,7 @@
 
 use crate::app::PivotApp;
 use egui::{RichText, Sense, Vec2};
-use pivot_core::{Aggregate, DataType, ThemedTableModel};
+use pivot_core::{Aggregate, DataType, FooterBandSpec, ThemedTableModel};
 use pivot_theme::Tokens;
 use serde_json::Value;
 
@@ -253,15 +253,62 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 ui.separator();
                 ui.label(RichText::new("Options").strong().color(t.text_strong));
                 let mut row_sub = app.pivot_spec.subtotals.row_subtotals;
-                let mut grand = app.pivot_spec.subtotals.grand_total;
                 if ui.checkbox(&mut row_sub, "Row subtotals").changed() { app.pivot_spec.subtotals.row_subtotals = row_sub; app.request_pivot_recompute(); }
-                if ui.checkbox(&mut grand, "Grand total").changed() { app.pivot_spec.subtotals.grand_total = grand; app.request_pivot_recompute(); }
+
                 ui.add_space(6.0);
-                ui.label(RichText::new("Stub head (col 1)").color(t.text_strong));
+                ui.label(RichText::new("Table title (AC3.3)").color(t.text_strong));
+                let auto = app.pivot_model.as_ref().map(|m| if m.title_pinned { "(pinned)".to_string() } else { m.title.clone() }).unwrap_or_else(|| "(recompute to preview)".to_string());
+                let mut pinned = app.pivot_spec.title_override.is_some();
+                if ui.checkbox(&mut pinned, "Pin title").changed() {
+                    app.set_title_pinned(pinned);
+                }
+                if let Some(over) = &mut app.pivot_spec.title_override {
+                    if ui.text_edit_singleline(over).changed() { app.request_pivot_recompute(); }
+                    if ui.small_button("Reset title to auto").clicked() { app.set_title_pinned(false); }
+                } else {
+                    ui.label(RichText::new(format!("Auto: {auto}")).color(t.text_muted).size(11.0));
+                }
+
+                ui.add_space(6.0);
+                ui.label(RichText::new("Stub head (col 1, AC3.1)").color(t.text_strong));
                 let mut stub = app.pivot_spec.stub_head.clone().unwrap_or_default();
-                if ui.text_edit_singleline(&mut stub).changed() {
-                    app.pivot_spec.stub_head = if stub.trim().is_empty() { None } else { Some(stub) };
+                let stub_resp = ui.text_edit_singleline(&mut stub);
+                if stub_resp.changed() {
+                    app.pivot_spec.stub_head = if stub.trim().is_empty() { None } else { Some(stub.clone()) };
                     app.request_pivot_recompute();
+                }
+                if !app.pivot_spec.stub_head.is_some() && !stub.is_empty() { /* already normalized */ }
+                if app.pivot_spec.stub_head.is_some() && ui.small_button("Clear stub head").clicked() {
+                    app.pivot_spec.stub_head = None;
+                    app.request_pivot_recompute();
+                }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.label(RichText::new("Footer bands (AC3.2)").strong().color(t.text_strong));
+                ui.horizontal_wrapped(|ui| {
+                    if ui.small_button("+ Grand Total").clicked() { app.add_footer_band(FooterBandSpec::grand_total()); }
+                    if ui.small_button("+ Average").clicked() { app.add_footer_band(FooterBandSpec::average()); }
+                    if ui.small_button("+ Count").clicked() { app.add_footer_band(FooterBandSpec::count()); }
+                    if ui.small_button("+ Notes").clicked() { app.add_footer_band(FooterBandSpec::notes()); }
+                });
+                let bands = app.pivot_spec.effective_footer_bands();
+                if bands.is_empty() {
+                    ui.label(RichText::new("(no footer bands)").color(t.text_disabled));
+                } else {
+                    let mut remove: Option<usize> = None;
+                    let mut mov: Option<(usize, usize)> = None;
+                    let len = bands.len();
+                    for (i, b) in bands.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("{:?}: {}", b.kind, b.effective_label())).color(t.text).size(12.0));
+                            if ui.small_button("x").clicked() { remove = Some(i); }
+                            if i > 0 && ui.small_button("^").clicked() { mov = Some((i, i - 1)); }
+                            if i + 1 < len && ui.small_button("v").clicked() { mov = Some((i, i + 1)); }
+                        });
+                    }
+                    if let Some(i) = remove { app.remove_footer_band(i); }
+                    else if let Some((a, b)) = mov { app.move_footer_band(a, b); }
                 }
             });
         });

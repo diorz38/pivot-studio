@@ -3,8 +3,8 @@
 use crate::{chrome, dock, menus};
 use pivot_core::pivot::compute;
 use pivot_core::{
-    Aggregate, DataTable, DataType, FieldRef, PivotSpec, SubtotalConfig, ThemedTableModel,
-    ValueField,
+    Aggregate, DataTable, DataType, FieldRef, FooterBandSpec, PivotSpec, SubtotalConfig,
+    ThemedTableModel, ValueField,
 };
 use pivot_data::FileKind;
 use pivot_theme::{apply, Brightness, Tokens};
@@ -361,8 +361,55 @@ impl PivotApp {
         self.pivot_spec.columns.clear();
         self.pivot_spec.values.clear();
         self.pivot_spec.filters.clear();
+        // Keep polished config (stub_head/title/footer bands) as user preference? Clear layout focuses on fields.
         self.pivot_model = None;
         self.status = "Pivot layout cleared.".to_string();
+    }
+
+    fn ensure_explicit_footer_bands(&mut self) {
+        if self.pivot_spec.footer_bands.is_empty() {
+            self.pivot_spec.footer_bands = self.pivot_spec.effective_footer_bands();
+            self.pivot_spec.subtotals.grand_total = false; // explicit bands now authoritative
+        }
+    }
+
+    pub fn add_footer_band(&mut self, band: FooterBandSpec) {
+        self.ensure_explicit_footer_bands();
+        self.pivot_spec.footer_bands.push(band);
+        self.request_pivot_recompute();
+    }
+
+    pub fn remove_footer_band(&mut self, idx: usize) {
+        self.ensure_explicit_footer_bands();
+        if idx < self.pivot_spec.footer_bands.len() {
+            self.pivot_spec.footer_bands.remove(idx);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn move_footer_band(&mut self, from: usize, to: usize) {
+        self.ensure_explicit_footer_bands();
+        let len = self.pivot_spec.footer_bands.len();
+        if from < len && to < len && from != to {
+            let item = self.pivot_spec.footer_bands.remove(from);
+            self.pivot_spec.footer_bands.insert(to, item);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn set_title_pinned(&mut self, pinned: bool) {
+        if pinned {
+            let current = self
+                .pivot_model
+                .as_ref()
+                .map(|m| m.title.clone())
+                .or(self.pivot_spec.title_override.clone())
+                .unwrap_or_default();
+            self.pivot_spec.title_override = Some(current);
+        } else {
+            self.pivot_spec.title_override = None;
+        }
+        self.request_pivot_recompute();
     }
 
     pub fn dispatch(&mut self, id: &str, params: &Value, ctx: &egui::Context) {

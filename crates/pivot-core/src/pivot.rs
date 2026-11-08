@@ -141,7 +141,6 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let mut row_keys: BTreeSet<Key> = BTreeSet::new();
     // (row_key, col_key, value_index) -> accumulator
     let mut cells: BTreeMap<(Key, Key, usize), Accum> = BTreeMap::new();
-    let mut grand: Vec<Accum> = (0..value_fields.len()).map(|_| Accum::default()).collect();
 
     for r in 0..table.row_count() {
         if !passes_filters(table, r, &spec.filters, &idx) {
@@ -162,7 +161,6 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         for (vi, (ci, vf)) in value_fields.iter().enumerate() {
             let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
             cells.entry((rk.clone(), ck.clone(), vi)).or_default().push(&v, vf.aggregate);
-            grand[vi].push(&v, vf.aggregate);
         }
     }
     if row_keys.is_empty() && !table.rows.is_empty() {
@@ -374,44 +372,71 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         }
     }
 
-    // Footer bands
+    // Footer bands (AC3.2): ordered, configurable; legacy default = Grand Total? + Notes.
     let mut footer_bands: Vec<FooterBand> = Vec::new();
-    if spec.subtotals.grand_total && !value_fields.is_empty() {
-        let mut frow = Vec::new();
-        frow.push(Cell::new("Grand Total", CellRole::GrandTotal));
-        for _ in 1..row_header_cols { frow.push(Cell::new("", CellRole::GrandTotal)); }
-        if spec.columns.is_empty() {
-            for (vi, (_, vf)) in value_fields.iter().enumerate() {
-                frow.push(Cell::new(grand[vi].finish(vf.aggregate).as_display(), CellRole::GrandTotal));
+    for band_spec in spec.effective_footer_bands() {
+        match band_spec.kind {
+            FooterBandKind::Notes => {
+                let mut frow = Vec::new();
+                let src = table.source.clone().unwrap_or_else(|| "(in-memory)".to_string());
+                let filter_summary = if spec.filters.is_empty() {
+                    "none".to_string()
+                } else {
+                    spec.filters.iter().map(|f| format!("{}:{:?}", f.field.name, f.op)).collect::<Vec<_>>().join(", ")
+                };
+                let note = format!("Source: {} | Rows: {} | Filters: {}", src, table.row_count(), filter_summary);
+                frow.push(Cell::new(note, CellRole::Footer));
+                footer_bands.push(FooterBand { kind: FooterBandKind::Notes, label: band_spec.effective_label(), cells: frow, pinned: false });
             }
-        } else {
-            // grand per col key
-            let mut grand_col: BTreeMap<(Key, usize), Accum> = BTreeMap::new();
-            for r in 0..table.row_count() {
-                if !passes_filters(table, r, &spec.filters, &idx) { continue; }
-                let ck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&ci| cell_text(table, r, ci)).collect() });
-                for (vi, (ci, vf)) in value_fields.iter().enumerate() {
-                    let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
-                    grand_col.entry((ck.clone(), vi)).or_default().push(&v, vf.aggregate);
+            FooterBandKind::GrandTotal | FooterBandKind::Average | FooterBandKind::Count | FooterBandKind::Custom | FooterBandKind::Subtotal => {
+                if value_fields.is_empty() { continue; }
+                let agg = band_spec.aggregate.unwrap_or(match band_spec.kind {
+                    FooterBandKind::Average => Aggregate::Average,
+                    FooterBandKind::Count => Aggregate::Count,
+                    _ => Aggregate::Sum,
+                });
+                // choose which value indices to compute with this aggregate: explicit field or all values (using band agg for non-grand/custom if spec'd)
+                let use_band_agg = matches!(band_spec.kind, FooterBandKind::Average | FooterBandKind::Count | FooterBandKind::Custom) || band_spec.aggregate.is_some();
+                let mut frow = Vec::new();
+                let role = match band_spec.kind {
+                    FooterBandKind::GrandTotal => CellRole::GrandTotal,
+                    _ => CellRole::Footer,
+                };
+                frow.push(Cell::new(band_spec.effective_label(), role.clone()));
+                for _ in 1..row_header_cols { frow.push(Cell::new("", role.clone())); }
+                if spec.columns.is_empty() {
+                    for (vi, (ci, vf)) in value_fields.iter().enumerate() {
+                        let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
+                        // compute over all filtered rows for this field
+                        let mut acc = Accum::default();
+                        for r in 0..table.row_count() {
+                            if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+                            let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
+                            acc.push(&v, a);
+                        }
+                        let _ = vi;
+                        frow.push(Cell::new(acc.finish(a).as_display(), role.clone()));
+                    }
+                } else {
+                    // per column key
+                    for ck in &col_key_vec {
+                        for (_vi, (ci, vf)) in value_fields.iter().enumerate() {
+                            let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
+                            let mut acc = Accum::default();
+                            for r in 0..table.row_count() {
+                                if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+                                let rck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&cci| cell_text(table, r, cci)).collect() });
+                                if &rck != ck { continue; }
+                                let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
+                                acc.push(&v, a);
+                            }
+                            frow.push(Cell::new(acc.finish(a).as_display(), role.clone()));
+                        }
+                    }
                 }
-            }
-            for ck in &col_key_vec {
-                for (vi, (_, vf)) in value_fields.iter().enumerate() {
-                    let text = grand_col.get(&(ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_else(|| grand[vi].finish(vf.aggregate).as_display());
-                    frow.push(Cell::new(text, CellRole::GrandTotal));
-                }
+                footer_bands.push(FooterBand { kind: band_spec.kind, label: band_spec.effective_label(), cells: frow, pinned: false });
             }
         }
-        footer_bands.push(FooterBand { kind: FooterBandKind::GrandTotal, label: "Grand Total".to_string(), cells: frow, pinned: false });
-    }
-
-    // Meta/notes footer (AC3.2 foundation)
-    {
-        let mut frow = Vec::new();
-        let src = table.source.clone().unwrap_or_else(|| "(in-memory)".to_string());
-        let note = format!("Source: {} | Rows: {} | Filters: {}", src, table.row_count(), spec.filters.len());
-        frow.push(Cell::new(note, CellRole::Footer));
-        footer_bands.push(FooterBand { kind: FooterBandKind::Notes, label: "Notes".to_string(), cells: frow, pinned: false });
     }
 
     let auto_title = auto_title(spec);
@@ -690,5 +715,53 @@ mod tests {
         assert!(m.footer_bands.iter().any(|f| matches!(f.kind, FooterBandKind::GrandTotal)));
         assert!(m.footer_bands.iter().any(|f| matches!(f.kind, FooterBandKind::Notes)));
         assert!(m.footer_bands.len() >= 2);
+    }
+
+    #[test]
+    fn ac3_2_configurable_multi_footer() {
+        let t = sample_table();
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region")],
+            values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig { grand_total: false, row_subtotals: false },
+            footer_bands: vec![
+                crate::spec::FooterBandSpec::grand_total(),
+                crate::spec::FooterBandSpec::average(),
+                crate::spec::FooterBandSpec::notes(),
+            ],
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        assert_eq!(m.footer_bands.len(), 3);
+        assert!(matches!(m.footer_bands[0].kind, FooterBandKind::GrandTotal));
+        assert!(matches!(m.footer_bands[1].kind, FooterBandKind::Average));
+        assert!(matches!(m.footer_bands[2].kind, FooterBandKind::Notes));
+        assert!(m.footer_bands[0].cells.iter().any(|c| c.text == "500"));
+        // Average of all filtered Sales rows: (100+150+200+50)/4 = 125
+        assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "125"));
+        let notes = &m.footer_bands[2].cells[0].text;
+        assert!(notes.contains("Rows: 4"));
+        assert!(notes.contains("Filters: none"));
+    }
+
+    #[test]
+    fn ac3_2_footer_reorder_and_filter_affects_values() {
+        let t = sample_table();
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region")],
+            values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
+            filters: vec![Filter { field: FieldRef::new("Product"), op: FilterOp::Equals, values: vec![Value::String("A".into())] }],
+            subtotals: SubtotalConfig::default(),
+            footer_bands: vec![
+                crate::spec::FooterBandSpec::notes(),
+                crate::spec::FooterBandSpec::grand_total(),
+            ],
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        assert!(matches!(m.footer_bands[0].kind, FooterBandKind::Notes));
+        assert!(matches!(m.footer_bands[1].kind, FooterBandKind::GrandTotal));
+        assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "300"));
+        assert!(m.footer_bands[0].cells[0].text.contains("Filters: Product:Equals"));
     }
 }
