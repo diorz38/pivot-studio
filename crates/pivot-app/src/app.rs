@@ -3,8 +3,8 @@
 use crate::{chrome, dock, menus};
 use pivot_core::pivot::compute;
 use pivot_core::{
-    Aggregate, DataTable, DataType, FieldRef, FooterBandSpec, PivotSpec, SubtotalConfig,
-    ThemedTableModel, ValueField,
+    Aggregate, DataTable, DataType, FieldRef, Filter, FilterOp, FooterBandSpec, PivotSpec, SubtotalConfig,
+    ThemedTableModel, Value as CoreValue, ValueField,
 };
 use pivot_data::FileKind;
 use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
@@ -53,6 +53,10 @@ pub struct PivotApp {
     pub pivot_spec: PivotSpec,
     pub pivot_model: Option<ThemedTableModel>,
     pub pivot_computing: Option<PivotComputeState>,
+    // Filter builder draft (UI state)
+    pub filter_field: String,
+    pub filter_op: FilterOp,
+    pub filter_value_idx: usize,
 }
 
 impl PivotApp {
@@ -79,6 +83,9 @@ impl PivotApp {
             },
             pivot_model: None,
             pivot_computing: None,
+            filter_field: String::new(),
+            filter_op: FilterOp::Equals,
+            filter_value_idx: 0,
         }
     }
 
@@ -366,6 +373,45 @@ impl PivotApp {
         // Keep polished config (stub_head/title/footer bands) as user preference? Clear layout focuses on fields.
         self.pivot_model = None;
         self.status = "Pivot layout cleared.".to_string();
+    }
+
+    /// Distinct display values for a column (capped), for filter pickers.
+    pub fn distinct_values_for(&self, col_name: &str, limit: usize) -> Vec<CoreValue> {
+        let Some(table) = &self.table else { return Vec::new() };
+        let Some(ci) = table.columns.iter().position(|c| c.name == col_name) else { return Vec::new() };
+        let mut seen = std::collections::BTreeSet::<String>::new();
+        let mut out = Vec::new();
+        for row in &table.rows {
+            let v = row.get(ci).cloned().unwrap_or(CoreValue::Null);
+            let key = v.as_display();
+            if seen.insert(key) {
+                out.push(v);
+                if out.len() >= limit { break; }
+            }
+        }
+        out
+    }
+
+    pub fn add_filter(&mut self, field: String, op: FilterOp, value: CoreValue) {
+        if field.is_empty() { return; }
+        self.pivot_spec.filters.push(Filter { field: FieldRef::new(field), op, values: vec![value] });
+        self.status = format!("Filter added ({} active).", self.pivot_spec.filters.len());
+        self.request_pivot_recompute();
+    }
+
+    pub fn remove_filter(&mut self, idx: usize) {
+        if idx < self.pivot_spec.filters.len() {
+            self.pivot_spec.filters.remove(idx);
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn clear_filters(&mut self) {
+        if !self.pivot_spec.filters.is_empty() {
+            self.pivot_spec.filters.clear();
+            self.request_pivot_recompute();
+            self.status = "Filters cleared.".to_string();
+        }
     }
 
     fn ensure_explicit_footer_bands(&mut self) {

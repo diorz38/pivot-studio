@@ -3,7 +3,7 @@
 
 use crate::app::PivotApp;
 use egui::{RichText, Sense, Vec2};
-use pivot_core::{Aggregate, DataType, FooterBandSpec, ThemedTableModel};
+use pivot_core::{Aggregate, DataType, FilterOp, FooterBandSpec, ThemedTableModel, Value as CoreValue};
 use pivot_theme::Tokens;
 use serde_json::Value;
 
@@ -96,15 +96,19 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
 
     egui::TopBottomPanel::bottom("dock_bottom")
         .resizable(true)
-        .default_height(170.0)
-        .min_height(80.0)
+        .default_height(210.0)
+        .min_height(90.0)
         .frame(egui::Frame::new().fill(t.panel_alt).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
         .show_inside(ui, |ui| {
-            panel_header(ui, "Data Preview / Filters", &t);
-            ui.add_space(4.0);
+            panel_header(ui, "Filters / Data Preview", &t);
+            ui.add_space(2.0);
+            if app.table.is_some() {
+                filters_ui(app, ui, &t);
+                ui.separator();
+            }
             if let Some(table) = &app.table {
-                let preview_rows = table.row_count().min(80);
-                egui::ScrollArea::both().auto_shrink([false, false]).max_height(120.0).show(ui, |ui| {
+                let preview_rows = table.row_count().min(60);
+                egui::ScrollArea::both().auto_shrink([false, false]).max_height(110.0).id_salt("data_preview_bottom").show(ui, |ui| {
                     egui::Grid::new("data_preview_grid").striped(false).min_col_width(90.0).show(ui, |ui| {
                         for col in &table.columns { header_cell(ui, &col.name, &t); }
                         ui.end_row();
@@ -121,7 +125,7 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                     ui.label(RichText::new(format!("Showing {preview_rows} of {} rows.", table.row_count())).color(t.text_muted).size(11.0));
                 }
             } else {
-                ui.label(RichText::new("Import data to see a preview. Filters UI arrives in a later phase.").color(t.text_muted));
+                ui.label(RichText::new("Import data to see filters and a preview.").color(t.text_muted));
             }
         });
 
@@ -355,6 +359,92 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
 
 fn render_model(model: &ThemedTableModel, ui: &mut egui::Ui, t: &Tokens, brightness: pivot_theme::Brightness, table_theme: pivot_theme::table::TableThemeId) {
     crate::pivot_grid::show(ui, model, t, brightness, table_theme);
+}
+
+fn op_label(op: FilterOp) -> &'static str {
+    match op {
+        FilterOp::Equals => "Equals",
+        FilterOp::NotEquals => "Not equals",
+        FilterOp::Include => "Include",
+        FilterOp::Exclude => "Exclude",
+    }
+}
+
+fn value_label(v: &CoreValue) -> String {
+    match v {
+        CoreValue::Null => "(empty)".to_string(),
+        _ => {
+            let s = v.as_display();
+            if s.is_empty() { "(empty)".to_string() } else { s }
+        }
+    }
+}
+
+fn filters_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
+    let fields: Vec<String> = app.table.as_ref().map(|tbl| tbl.columns.iter().map(|c| c.name.clone()).collect()).unwrap_or_default();
+    if fields.is_empty() {
+        ui.label(RichText::new("No fields.").color(t.text_disabled));
+        return;
+    }
+    if app.filter_field.is_empty() || !fields.iter().any(|f| f == &app.filter_field) {
+        app.filter_field = fields[0].clone();
+        app.filter_value_idx = 0;
+    }
+    let values = app.distinct_values_for(&app.filter_field, 400);
+    if app.filter_value_idx >= values.len() { app.filter_value_idx = 0; }
+
+    let mut add: Option<(String, FilterOp, CoreValue)> = None;
+    let mut clear_all = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Field").color(t.text_muted).size(11.0));
+        egui::ComboBox::from_id_salt("filter_field").selected_text(&app.filter_field).width(140.0).show_ui(ui, |ui| {
+            for f in &fields {
+                if ui.selectable_value(&mut app.filter_field, f.clone(), f).changed() {
+                    app.filter_value_idx = 0;
+                }
+            }
+        });
+        ui.label(RichText::new("Op").color(t.text_muted).size(11.0));
+        egui::ComboBox::from_id_salt("filter_op").selected_text(op_label(app.filter_op)).width(110.0).show_ui(ui, |ui| {
+            for op in [FilterOp::Equals, FilterOp::NotEquals, FilterOp::Include, FilterOp::Exclude] {
+                ui.selectable_value(&mut app.filter_op, op, op_label(op));
+            }
+        });
+        ui.label(RichText::new("Value").color(t.text_muted).size(11.0));
+        let selected = values.get(app.filter_value_idx).map(value_label).unwrap_or_else(|| "(no values)".to_string());
+        egui::ComboBox::from_id_salt("filter_value").selected_text(selected).width(170.0).show_ui(ui, |ui| {
+            if values.is_empty() {
+                ui.label(RichText::new("(no values)").color(t.text_disabled));
+            }
+            for (i, v) in values.iter().enumerate() {
+                ui.selectable_value(&mut app.filter_value_idx, i, value_label(v));
+            }
+        });
+        if ui.button("Add filter").clicked() {
+            if let Some(v) = values.get(app.filter_value_idx).cloned() {
+                add = Some((app.filter_field.clone(), app.filter_op, v));
+            } else {
+                app.status = "No value selected for filter.".to_string();
+            }
+        }
+        if ui.button("Clear all").clicked() { clear_all = true; }
+    });
+    if let Some((f, op, v)) = add { app.add_filter(f, op, v); }
+    if clear_all { app.clear_filters(); }
+
+    if app.pivot_spec.filters.is_empty() {
+        ui.label(RichText::new("No active filters. Dynamic title/Notes update when filters change (AC3.3).").color(t.text_muted).size(11.0));
+    } else {
+        let mut remove: Option<usize> = None;
+        for (i, f) in app.pivot_spec.filters.iter().enumerate() {
+            let vtxt = f.values.first().map(value_label).unwrap_or_default();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{} {} {}", f.field.name, op_label(f.op), vtxt)).color(t.text).size(12.0));
+                if ui.small_button("x").on_hover_text("Remove filter").clicked() { remove = Some(i); }
+            });
+        }
+        if let Some(i) = remove { app.remove_filter(i); }
+    }
 }
 
 fn header_cell(ui: &mut egui::Ui, text: &str, t: &Tokens) {
