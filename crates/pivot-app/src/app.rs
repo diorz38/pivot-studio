@@ -937,6 +937,7 @@ impl PivotApp {
             color_theme: self.table_color_theme,
             border_theme: self.table_border_theme,
             brightness: self.brightness,
+            output_language: self.pivot_spec.output_language,
         };
         let (tx, rx) = mpsc::channel::<ExportMsg>();
         let cancel = Arc::new(AtomicBool::new(false));

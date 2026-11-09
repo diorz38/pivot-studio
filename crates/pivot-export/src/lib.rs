@@ -8,7 +8,7 @@ pub mod html;
 pub mod pdf;
 pub mod xlsx;
 
-use pivot_core::ThemedTableModel;
+use pivot_core::{OutputLanguage, ThemedTableModel};
 use pivot_theme::table::{BorderThemeId, TableColorThemeId, TableStyle};
 use pivot_theme::{Brightness, Tokens};
 use std::path::Path;
@@ -35,6 +35,8 @@ pub struct ExportStyle {
     pub color_theme: TableColorThemeId,
     pub border_theme: BorderThemeId,
     pub brightness: Brightness,
+    /// Output language for localized export text (e.g. continuation labels). Defaults to English.
+    pub output_language: OutputLanguage,
 }
 
 impl Default for ExportStyle {
@@ -43,6 +45,7 @@ impl Default for ExportStyle {
             color_theme: TableColorThemeId::default(),
             border_theme: BorderThemeId::Full,
             brightness: Brightness::MediumDark,
+            output_language: OutputLanguage::En,
         }
     }
 }
@@ -161,6 +164,7 @@ mod tests {
             color_theme: pivot_theme::table::TableColorThemeId::Ledger,
             border_theme: BorderThemeId::HorizontalRules,
             brightness: pivot_theme::Brightness::Light,
+            output_language: pivot_core::OutputLanguage::En,
         }).unwrap();
         let h3 = std::fs::read_to_string(&p3).unwrap();
         let p4 = dir.path().join("d.html");
@@ -168,6 +172,7 @@ mod tests {
             color_theme: pivot_theme::table::TableColorThemeId::Minimal,
             border_theme: BorderThemeId::None,
             brightness: pivot_theme::Brightness::Dark,
+            output_language: pivot_core::OutputLanguage::En,
         }).unwrap();
         let h4 = std::fs::read_to_string(&p4).unwrap();
         assert_ne!(h3, h4, "different table themes should produce different HTML styling");
