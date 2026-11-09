@@ -442,7 +442,7 @@ mod tests {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
             filters: vec![Filter { field: FieldRef::new("Product"), op: FilterOp::Equals, values: vec![Value::String("A".into())] }],
-            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false },
+            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false, column_totals: false },
             ..Default::default()
         };
         let plan = build_group_by_sql("sales", &spec, true).unwrap();
@@ -505,7 +505,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false },
+            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false, column_totals: false },
             ..Default::default()
         };
         let push = execute_pivot_sqlite(&path, "sales", &spec, None).unwrap();

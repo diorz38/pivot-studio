@@ -12,6 +12,66 @@ impl Key {
     fn display_part(&self, idx: usize) -> &str {
         self.0.get(idx).map(|s| s.as_str()).unwrap_or("")
     }
+    fn prefix(&self, level: usize) -> Vec<String> {
+        let n = (level + 1).min(self.0.len());
+        self.0[..n].to_vec()
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ColSlot {
+    Data(Key),
+    /// Subtotal for a column-group prefix at level (0-based in column fields).
+    Subtotal { level: usize, prefix: Vec<String>, label: String },
+    /// Grand total across all pivot columns.
+    GrandTotal,
+}
+
+fn col_subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage) -> String {
+    subtotal_label(prefix, lang)
+}
+
+fn build_col_slots(col_key_vec: &[Key], levels: usize, sub_flags: &[bool], lang: crate::spec::OutputLanguage, show_grand: bool) -> Vec<ColSlot> {
+    if levels == 0 || col_key_vec.is_empty() {
+        let mut slots = Vec::new();
+        if show_grand { slots.push(ColSlot::GrandTotal); }
+        return slots;
+    }
+    let mut slots = Vec::new();
+    let mut emitted: BTreeSet<(usize, Vec<String>)> = BTreeSet::new();
+    for i in 0..col_key_vec.len() {
+        if i > 0 {
+            for level in (0..levels).rev() {
+                if !*sub_flags.get(level).unwrap_or(&false) { continue; }
+                let prev_p = col_key_vec[i - 1].prefix(level);
+                let cur_p = col_key_vec[i].prefix(level);
+                if prev_p != cur_p {
+                    let key = (level, prev_p.clone());
+                    if !emitted.contains(&key) {
+                        emitted.insert(key);
+                        let plabel = prev_p.last().cloned().unwrap_or_default();
+                        slots.push(ColSlot::Subtotal { level, prefix: prev_p, label: col_subtotal_label(&plabel, lang) });
+                    }
+                }
+            }
+        }
+        slots.push(ColSlot::Data(col_key_vec[i].clone()));
+    }
+    let last = col_key_vec.len() - 1;
+    for level in (0..levels).rev() {
+        if !*sub_flags.get(level).unwrap_or(&false) { continue; }
+        let p = col_key_vec[last].prefix(level);
+        let key = (level, p.clone());
+        if !emitted.contains(&key) {
+            emitted.insert(key);
+            let plabel = p.last().cloned().unwrap_or_default();
+            slots.push(ColSlot::Subtotal { level, prefix: p, label: col_subtotal_label(&plabel, lang) });
+        }
+    }
+    if show_grand {
+        slots.push(ColSlot::GrandTotal);
+    }
+    slots
 }
 
 #[derive(Debug, Default)]
@@ -26,6 +86,16 @@ struct Accum {
 }
 
 impl Accum {
+    fn merge(&mut self, other: &Accum) {
+        self.sum += other.sum;
+        self.count += other.count;
+        self.non_null += other.non_null;
+        self.min = match (self.min, other.min) { (Some(a), Some(b)) => Some(a.min(b)), (Some(a), None) => Some(a), (None, Some(b)) => Some(b), (None, None) => None };
+        self.max = match (self.max, other.max) { (Some(a), Some(b)) => Some(a.max(b)), (Some(a), None) => Some(a), (None, Some(b)) => Some(b), (None, None) => None };
+        self.distinct.extend(other.distinct.iter().cloned());
+        self.saw_number |= other.saw_number;
+    }
+
     fn push(&mut self, v: &Value, agg: Aggregate) {
         match agg {
             Aggregate::Count => {
@@ -156,11 +226,13 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let mut row_keys: BTreeSet<Key> = BTreeSet::new();
     // (row_key, col_key, value_index) -> accumulator
     let mut cells: BTreeMap<(Key, Key, usize), Accum> = BTreeMap::new();
+    let mut filtered_rows: usize = 0;
 
     for r in 0..table.row_count() {
         if !passes_filters(table, r, &spec.filters, &idx) {
             continue;
         }
+        filtered_rows += 1;
         let rk = Key(if row_fields.is_empty() {
             vec!["(All)".to_string()]
         } else {
@@ -193,8 +265,20 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     } else {
         value_fields.iter().map(|(_, vf)| vf.effective_name()).collect()
     };
-    let total_cols = row_header_cols + col_key_vec.len() * value_count.max(1);
     let lang = spec.output_language;
+    let show_grand_col = spec.subtotals.column_totals && !spec.columns.is_empty() && !value_fields.is_empty();
+    let col_sub_flags = spec.effective_column_subtotals();
+    let col_slots: Vec<ColSlot> = if spec.columns.is_empty() {
+        vec![ColSlot::Data(Key(vec![]))]
+    } else {
+        build_col_slots(&col_key_vec, spec.columns.len(), &col_sub_flags, lang, show_grand_col)
+    };
+    let grand_label = match lang {
+        crate::spec::OutputLanguage::En => "Total".to_string(),
+        crate::spec::OutputLanguage::Id => "Total".to_string(),
+        crate::spec::OutputLanguage::IdEn => "Total".to_string(),
+    };
+    let total_cols = row_header_cols + col_slots.len() * value_count.max(1);
 
     let stub_head = spec
         .stub_head
@@ -224,32 +308,52 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
             if level == 0 {
                 hr.push(Cell::span(stub_head.clone(), CellRole::StubHead, row_header_cols, levels));
             }
-            // group consecutive same labels at this level given same prefix
             let mut i = 0;
-            while i < col_key_vec.len() {
-                let label = col_key_vec[i].display_part(level).to_string();
-                let mut span = 1usize;
-                while i + span < col_key_vec.len() {
-                    let same_prefix = (0..=level).all(|l| col_key_vec[i].display_part(l) == col_key_vec[i + span].display_part(l));
-                    if same_prefix {
-                        span += 1;
-                    } else {
-                        break;
+            while i < col_slots.len() {
+                match &col_slots[i] {
+                    ColSlot::Data(k) => {
+                        let label = k.display_part(level).to_string();
+                        let mut span = 1usize;
+                        while i + span < col_slots.len() {
+                            if let (ColSlot::Data(a), ColSlot::Data(b)) = (&col_slots[i], &col_slots[i + span]) {
+                                let same_prefix = (0..=level).all(|l| a.display_part(l) == b.display_part(l));
+                                if same_prefix { span += 1; } else { break; }
+                            } else { break; }
+                        }
+                        hr.push(Cell::span(label, CellRole::ColHeader, span * value_count.max(1), 1));
+                        i += span;
+                    }
+                    ColSlot::Subtotal { level: sl, label, prefix } => {
+                        let vspan = value_count.max(1);
+                        if level == *sl {
+                            hr.push(Cell::span(label.clone(), CellRole::ColHeader, vspan, 1));
+                        } else if level < *sl {
+                            // show group context above the subtotal slot
+                            let ctx = prefix.get(level).cloned().unwrap_or_default();
+                            hr.push(Cell::span(ctx, CellRole::ColHeader, vspan, 1));
+                        } else {
+                            hr.push(Cell::span("", CellRole::ColHeader, vspan, 1));
+                        }
+                        i += 1;
+                    }
+                    ColSlot::GrandTotal => {
+                        let vspan = value_count.max(1);
+                        if level == 0 {
+                            hr.push(Cell::span(grand_label.clone(), CellRole::ColHeader, vspan, 1));
+                        } else {
+                            hr.push(Cell::span("", CellRole::ColHeader, vspan, 1));
+                        }
+                        i += 1;
                     }
                 }
-                hr.push(Cell::span(label, CellRole::ColHeader, span * value_count.max(1), 1));
-                i += span;
             }
             header_rows.push(hr);
         }
-        if !effective_values.is_empty() && levels > 0 && effective_values.len() > 1 {
+        if !effective_values.is_empty() && effective_values.len() > 1 {
             let mut hr = Vec::new();
-            for _ in 0..row_header_cols {
-                hr.push(Cell::new("", CellRole::RowHeader));
-            }
-            for ck in &col_key_vec {
+            for _ in 0..row_header_cols { hr.push(Cell::new("", CellRole::RowHeader)); }
+            for _slot in &col_slots {
                 for name in &effective_values {
-                    let _ = ck;
                     hr.push(Cell::new(name, CellRole::ColHeader));
                 }
             }
@@ -329,9 +433,27 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                             row.push(Cell::new(text, CellRole::Subtotal));
                         }
                     } else {
-                        for ck in &col_key_vec {
+                        for slot in &col_slots {
                             for (vi, (_, vf)) in value_fields.iter().enumerate() {
-                                let text = prefix_col_subs.get(&(prefix.clone(), ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default();
+                                let text = match slot {
+                                    ColSlot::Data(ck) => prefix_col_subs.get(&(prefix.clone(), ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default(),
+                                    ColSlot::Subtotal { prefix: cp, .. } => {
+                                        let mut acc = Accum::default();
+                                        for dck in &col_key_vec {
+                                            if dck.0.len() >= cp.len() && dck.0[..cp.len()] == cp[..] {
+                                                if let Some(a) = prefix_col_subs.get(&(prefix.clone(), dck.clone(), vi)) { acc.merge(a); }
+                                            }
+                                        }
+                                        acc.finish(vf.aggregate).as_display()
+                                    }
+                                    ColSlot::GrandTotal => {
+                                        let mut acc = Accum::default();
+                                        for dck in &col_key_vec {
+                                            if let Some(a) = prefix_col_subs.get(&(prefix.clone(), dck.clone(), vi)) { acc.merge(a); }
+                                        }
+                                        acc.finish(vf.aggregate).as_display()
+                                    }
+                                };
                                 row.push(Cell::new(text, CellRole::Subtotal));
                             }
                         }
@@ -350,13 +472,36 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         }
         if value_fields.is_empty() {
             row.push(Cell::new("", CellRole::Body));
-        } else {
-            for ck in &col_key_vec {
+        } else if spec.columns.is_empty() {
+            for slot in &col_slots {
+                let _ = slot;
                 for (vi, (_, vf)) in value_fields.iter().enumerate() {
-                    let text = cells
-                        .get(&(rk.clone(), ck.clone(), vi))
-                        .map(|a| a.finish(vf.aggregate).as_display())
-                        .unwrap_or_default();
+                    let text = cells.get(&(rk.clone(), Key(vec![]), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default();
+                    row.push(Cell::new(text, CellRole::Body));
+                }
+            }
+        } else {
+            for slot in &col_slots {
+                for (vi, (_, vf)) in value_fields.iter().enumerate() {
+                    let text = match slot {
+                        ColSlot::Data(ck) => cells.get(&(rk.clone(), ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default(),
+                        ColSlot::Subtotal { prefix: cp, .. } => {
+                            let mut acc = Accum::default();
+                            for dck in &col_key_vec {
+                                if dck.0.len() >= cp.len() && dck.0[..cp.len()] == cp[..] {
+                                    if let Some(a) = cells.get(&(rk.clone(), dck.clone(), vi)) { acc.merge(a); }
+                                }
+                            }
+                            acc.finish(vf.aggregate).as_display()
+                        }
+                        ColSlot::GrandTotal => {
+                            let mut acc = Accum::default();
+                            for dck in &col_key_vec {
+                                if let Some(a) = cells.get(&(rk.clone(), dck.clone(), vi)) { acc.merge(a); }
+                            }
+                            acc.finish(vf.aggregate).as_display()
+                        }
+                    };
                     row.push(Cell::new(text, CellRole::Body));
                 }
             }
@@ -384,9 +529,27 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                     row.push(Cell::new(text, CellRole::Subtotal));
                 }
             } else {
-                for ck in &col_key_vec {
+                for slot in &col_slots {
                     for (vi, (_, vf)) in value_fields.iter().enumerate() {
-                        let text = prefix_col_subs.get(&(prefix.clone(), ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default();
+                        let text = match slot {
+                            ColSlot::Data(ck) => prefix_col_subs.get(&(prefix.clone(), ck.clone(), vi)).map(|a| a.finish(vf.aggregate).as_display()).unwrap_or_default(),
+                            ColSlot::Subtotal { prefix: cp, .. } => {
+                                let mut acc = Accum::default();
+                                for dck in &col_key_vec {
+                                    if dck.0.len() >= cp.len() && dck.0[..cp.len()] == cp[..] {
+                                        if let Some(a) = prefix_col_subs.get(&(prefix.clone(), dck.clone(), vi)) { acc.merge(a); }
+                                    }
+                                }
+                                acc.finish(vf.aggregate).as_display()
+                            }
+                            ColSlot::GrandTotal => {
+                                let mut acc = Accum::default();
+                                for dck in &col_key_vec {
+                                    if let Some(a) = prefix_col_subs.get(&(prefix.clone(), dck.clone(), vi)) { acc.merge(a); }
+                                }
+                                acc.finish(vf.aggregate).as_display()
+                            }
+                        };
                         row.push(Cell::new(text, CellRole::Subtotal));
                     }
                 }
@@ -400,16 +563,30 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     for band_spec in spec.effective_footer_bands() {
         match band_spec.kind {
             FooterBandKind::Notes => {
-                let mut frow = Vec::new();
-                let src = table.source.clone().unwrap_or_else(|| "(in-memory)".to_string());
+                let src = spec
+                    .source_label
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+                    .or_else(|| table.source.clone())
+                    .unwrap_or_else(|| "(in-memory)".to_string());
                 let filter_summary = if spec.filters.is_empty() {
                     String::new()
                 } else {
-                    spec.filters.iter().map(|f| format_filter_readable(f, lang)).collect::<Vec<_>>().join("; ")
+                    spec.filters
+                        .iter()
+                        .map(|f| format_filter_readable(f, lang))
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 };
-                let note = notes_text(lang, &src, table.row_count(), &filter_summary);
-                frow.push(Cell::span(note, CellRole::Footer, total_cols, 1));
-                footer_bands.push(FooterBand { kind: FooterBandKind::Notes, label: band_spec.effective_label_lang(lang), cells: frow, pinned: false });
+                for line in notes_lines(lang, &src, table.row_count(), filtered_rows, &filter_summary) {
+                    footer_bands.push(FooterBand {
+                        kind: FooterBandKind::Notes,
+                        label: band_spec.effective_label_lang(lang),
+                        cells: vec![Cell::span(line, CellRole::Footer, total_cols, 1)],
+                        pinned: false,
+                    });
+                }
             }
             FooterBandKind::GrandTotal | FooterBandKind::Average | FooterBandKind::Count | FooterBandKind::Custom | FooterBandKind::Subtotal => {
                 if value_fields.is_empty() { continue; }
@@ -458,17 +635,27 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                         }
                     }
                 } else {
-                    // per column key
-                    for ck in &col_key_vec {
+                    // per column slot (data / per-level subtotal / grand total)
+                    let data_col_matches = |dck: &Key, slot: &ColSlot| -> bool {
+                        match slot {
+                            ColSlot::Data(ck) => dck == ck,
+                            ColSlot::Subtotal { prefix, .. } => dck.0.len() >= prefix.len() && dck.0[..prefix.len()] == prefix[..],
+                            ColSlot::GrandTotal => true,
+                        }
+                    };
+                    for slot in &col_slots {
                         for (vi, (ci, vf)) in value_fields.iter().enumerate() {
                             if matches!(band_spec.kind, FooterBandKind::Average) && band_spec.field.is_none() {
-                                // Mean of displayed/calculated pivot values in this column (detail body rows).
+                                // Mean of displayed/calculated pivot values in this slot (detail body rows).
                                 let mut sum = 0.0_f64; let mut n = 0_i64;
                                 for rk in &row_key_vec {
-                                    if let Some(acc) = cells.get(&(rk.clone(), ck.clone(), vi)) {
-                                        let v = acc.finish(vf.aggregate);
-                                        let num = numeric(&v).or_else(|| v.as_display().trim().replace(',', "").parse::<f64>().ok());
-                                        if let Some(num) = num { sum += num; n += 1; }
+                                    for dck in &col_key_vec {
+                                        if !data_col_matches(dck, slot) { continue; }
+                                        if let Some(acc) = cells.get(&(rk.clone(), dck.clone(), vi)) {
+                                            let v = acc.finish(vf.aggregate);
+                                            let num = numeric(&v).or_else(|| v.as_display().trim().replace(',', "").parse::<f64>().ok());
+                                            if let Some(num) = num { sum += num; n += 1; }
+                                        }
                                     }
                                 }
                                 let text = if n > 0 { format_number(sum / n as f64, band_spec.decimals) } else { String::new() };
@@ -479,7 +666,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                                 for r in 0..table.row_count() {
                                     if !passes_filters(table, r, &spec.filters, &idx) { continue; }
                                     let rck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&cci| cell_text(table, r, cci)).collect() });
-                                    if &rck != ck { continue; }
+                                    if !data_col_matches(&rck, slot) { continue; }
                                     let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
                                     acc.push(&v, a);
                                 }
@@ -644,16 +831,42 @@ fn format_filter_readable(f: &crate::spec::Filter, lang: crate::spec::OutputLang
     }
 }
 
-fn notes_text(lang: crate::spec::OutputLanguage, source: &str, rows: usize, filter_summary: &str) -> String {
+fn notes_lines(
+    lang: crate::spec::OutputLanguage,
+    source: &str,
+    rows: usize,
+    filtered_rows: usize,
+    filter_summary: &str,
+) -> Vec<String> {
     use crate::spec::OutputLanguage::*;
-    let none = match lang { En => "none", Id => "tidak ada", IdEn => "none / tidak ada" };
+    let none = match lang {
+        En => "none",
+        Id => "tidak ada",
+        IdEn => "none / tidak ada",
+    };
     let filters = if filter_summary.trim().is_empty() { none } else { filter_summary };
     match lang {
-        En => format!("Data source: {source} | Rows: {rows} | Filters: {filters}"),
-        Id => format!("Sumber data: {source} | Baris: {rows} | Filter: {filters}"),
-        IdEn => format!("Data source / Sumber data: {source} | Rows / Baris: {rows} | Filters / Filter: {filters}"),
+        En => vec![
+            format!("Data source: {source}"),
+            format!("Rows: {rows}"),
+            format!("Filtered rows: {filtered_rows}"),
+            format!("Filters: {filters}"),
+        ],
+        Id => vec![
+            format!("Sumber data: {source}"),
+            format!("Baris Data: {rows}"),
+            format!("Baris Data terfilter: {filtered_rows}"),
+            format!("Filter: {filters}"),
+        ],
+        IdEn => vec![
+            format!("Data source / Sumber data: {source}"),
+            format!("Rows / Baris Data: {rows}"),
+            format!("Filtered rows / Baris Data terfilter: {filtered_rows}"),
+            format!("Filters / Filter: {filters}"),
+        ],
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -689,7 +902,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: true },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: true, column_totals: false },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -707,7 +920,7 @@ mod tests {
             rows: vec![FieldRef::new("Region")],
             columns: vec![FieldRef::new("Product")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -727,7 +940,7 @@ mod tests {
                 ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
                 ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
             ],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -844,7 +1057,7 @@ mod tests {
                 ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
                 ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
             ],
-            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true },
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
             ..Default::default()
         };
         let start = Instant::now();
@@ -876,7 +1089,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region"), FieldRef::new("City")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true },
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -899,7 +1112,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false },
+            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false, column_totals: false },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -914,7 +1127,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { grand_total: false, row_subtotals: false },
+            subtotals: SubtotalConfig { grand_total: false, row_subtotals: false, column_totals: false },
             footer_bands: vec![
                 crate::spec::FooterBandSpec::grand_total(),
                 crate::spec::FooterBandSpec::average(),
@@ -924,16 +1137,18 @@ mod tests {
             ..Default::default()
         };
         let m = compute(&t, &spec);
-        assert_eq!(m.footer_bands.len(), 3);
+        assert!(m.footer_bands.len() >= 6, "notes expands to 4 rows: {:?}", m.footer_bands.len());
         assert!(matches!(m.footer_bands[0].kind, FooterBandKind::GrandTotal));
         assert!(matches!(m.footer_bands[1].kind, FooterBandKind::Average));
-        assert!(matches!(m.footer_bands[2].kind, FooterBandKind::Notes));
+        assert!(m.footer_bands.iter().skip(2).all(|b| matches!(b.kind, FooterBandKind::Notes)));
         assert!(m.footer_bands[0].cells.iter().any(|c| c.text == "500"));
         // Average of displayed pivot values per column (detail rows): (East 250 + West 250) / 2 = 125? no, East=100+150=250, West=200+50=250, mean=250
         assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "250"));
-        let notes = &m.footer_bands[2].cells[0].text;
-        assert!(notes.contains("Rows: 4"));
-        assert!(notes.contains("Filters: none"));
+        let notes: Vec<String> = m.footer_bands.iter().skip(2).map(|b| b.cells[0].text.clone()).collect();
+        assert!(notes.iter().any(|s| s == "Rows: 4"), "notes: {:?}", notes);
+        assert!(notes.iter().any(|s| s == "Filtered rows: 4"), "notes: {:?}", notes);
+        assert!(notes.iter().any(|s| s == "Filters: none"), "notes: {:?}", notes);
+        assert!(notes.iter().any(|s| s.starts_with("Data source:")), "notes: {:?}", notes);
     }
 
     #[test]
@@ -953,12 +1168,39 @@ mod tests {
         };
         let m = compute(&t, &spec);
         assert!(matches!(m.footer_bands[0].kind, FooterBandKind::Notes));
-        assert!(matches!(m.footer_bands[1].kind, FooterBandKind::GrandTotal));
-        assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "300"));
-        let note = &m.footer_bands[0].cells[0].text;
-        assert!(note.contains("Filters"), "note: {note}");
-        assert!(note.contains("Product"), "note: {note}");
-        assert!(note.contains("A"), "note: {note}");
+        let gt_idx = m.footer_bands.iter().position(|b| matches!(b.kind, FooterBandKind::GrandTotal)).expect("grand total band");
+        assert_eq!(gt_idx, 4, "notes spec expands to 4 rows before grand total");
+        assert!(m.footer_bands[gt_idx].cells.iter().any(|c| c.text == "300"));
+        let notes: String = m.footer_bands.iter().take(gt_idx).map(|b| b.cells[0].text.clone()).collect::<Vec<_>>().join("\n");
+        assert!(notes.contains("Rows: 4"), "note: {notes}");
+        assert!(notes.contains("Filtered rows: 2"), "note: {notes}");
+        assert!(notes.contains("Filters:"), "note: {notes}");
+        assert!(notes.contains("Product"), "note: {notes}");
+        assert!(notes.contains("A"), "note: {notes}");
+    }
+
+    #[test]
+    fn notes_respect_source_label_and_id_format() {
+        let t = sample_table();
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region")],
+            values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig::default(),
+            output_language: crate::spec::OutputLanguage::Id,
+            source_label: Some(r"D:\Documents\Downloads\mitra.csv".to_string()),
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let notes: Vec<String> = m
+            .footer_bands
+            .iter()
+            .filter(|b| matches!(b.kind, FooterBandKind::Notes))
+            .map(|b| b.cells[0].text.clone())
+            .collect();
+        assert_eq!(notes[0], r"Sumber data: D:\Documents\Downloads\mitra.csv");
+        assert_eq!(notes[1], "Baris Data: 4");
+        assert_eq!(notes[2], "Baris Data terfilter: 4");
+        assert_eq!(notes[3], "Filter: tidak ada");
     }
     #[test]
     fn ac3_2_average_on_column_count_values() {
@@ -989,5 +1231,113 @@ mod tests {
         let avg = m.footer_bands.iter().find(|f| matches!(f.kind, FooterBandKind::Average)).unwrap();
         let texts: Vec<_> = avg.cells.iter().map(|c| c.text.as_str()).collect();
         assert!(texts.iter().any(|t| *t == "1.5" || *t == "1.50" || *t == "1,5"), "avg row: {:?}", texts);
+    }
+
+    #[test]
+    fn row_subtotals_can_be_hidden() {
+        let t = DataTable {
+            columns: vec![
+                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "dept".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "amt".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+            ],
+            rows: vec![
+                vec![Value::String("East".into()), Value::String("A".into()), Value::Integer(100)],
+                vec![Value::String("East".into()), Value::String("B".into()), Value::Integer(120)],
+                vec![Value::String("West".into()), Value::String("A".into()), Value::Integer(200)],
+            ],
+            source: None,
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef { name: "region".into() }, FieldRef { name: "dept".into() }],
+            values: vec![ValueField { field: FieldRef { name: "amt".into() }, aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let b: Vec<Vec<String>> = m.body_rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect()).collect();
+        assert!(!b.iter().any(|r| r.iter().any(|c| c.contains("Subtotal"))), "subtotal rows should be hidden: {:?}", b);
+        assert!(m.footer_bands.iter().all(|b| b.kind != FooterBandKind::GrandTotal));
+    }
+
+    #[test]
+    fn column_totals_add_total_column_across_pivot_columns() {
+        let t = DataTable {
+            columns: vec![
+                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "year".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+            ],
+            rows: vec![
+                vec![Value::String("East".into()), Value::Integer(2024), Value::Integer(100)],
+                vec![Value::String("East".into()), Value::Integer(2025), Value::Integer(120)],
+                vec![Value::String("West".into()), Value::Integer(2024), Value::Integer(200)],
+                vec![Value::String("West".into()), Value::Integer(2025), Value::Integer(300)],
+            ],
+            source: None,
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef { name: "region".into() }],
+            columns: vec![FieldRef { name: "year".into() }],
+            values: vec![ValueField { field: FieldRef { name: "sales".into() }, aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: true },
+            footer_bands: vec![crate::spec::FooterBandSpec::grand_total()],
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let header_texts: Vec<String> = m.header_rows.first().map(|r| r.iter().map(|c| c.text.clone()).collect()).unwrap_or_default();
+        assert!(header_texts.iter().any(|t| t == "Total"), "missing Total column header: {:?}", header_texts);
+        let b: Vec<Vec<String>> = m.body_rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect()).collect();
+        let east = b.iter().find(|r| r.first().map(|s| s == "East").unwrap_or(false)).expect("East row");
+        assert_eq!(east.last().map(|s| s.as_str()), Some("220"), "East total wrong: {:?}", east);
+        let west = b.iter().find(|r| r.first().map(|s| s == "West").unwrap_or(false)).expect("West row");
+        assert_eq!(west.last().map(|s| s.as_str()), Some("500"), "West total wrong: {:?}", west);
+        let gt = m.footer_bands.iter().find(|b| b.kind == FooterBandKind::GrandTotal).expect("grand total");
+        let gt_vals: Vec<String> = gt.cells.iter().map(|c| c.text.clone()).collect();
+        assert_eq!(gt_vals.last().map(|s| s.as_str()), Some("720"), "grand total column wrong: {:?}", gt_vals);
+    }
+    #[test]
+    fn column_level_subtotals_add_subtotal_columns_at_selected_level() {
+        // 2 column levels (region -> quarter), 1 row, subtotal enabled at level 0 (region).
+        let t = DataTable {
+            columns: vec![
+                Column { name: "product".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "quarter".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+            ],
+            rows: vec![
+                vec![Value::String("A".into()), Value::String("East".into()), Value::String("Q1".into()), Value::Integer(10)],
+                vec![Value::String("A".into()), Value::String("East".into()), Value::String("Q2".into()), Value::Integer(20)],
+                vec![Value::String("A".into()), Value::String("West".into()), Value::String("Q1".into()), Value::Integer(30)],
+                vec![Value::String("A".into()), Value::String("West".into()), Value::String("Q2".into()), Value::Integer(40)],
+                vec![Value::String("B".into()), Value::String("East".into()), Value::String("Q1".into()), Value::Integer(5)],
+            ],
+            source: None,
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("product")],
+            columns: vec![FieldRef::new("region"), FieldRef::new("quarter")],
+            values: vec![ValueField { field: FieldRef::new("sales"), aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            column_subtotals: vec![true, false], // subtotal per region
+            output_language: crate::spec::OutputLanguage::En,
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        // Subtotal labels for the region level (level 0) appear in header row 0.
+        let h0: Vec<String> = m.header_rows.first().map(|r| r.iter().map(|c| c.text.clone()).collect()).unwrap_or_default();
+        assert!(h0.iter().any(|t| t == "East Subtotal"), "missing East Subtotal in header: {:?}", h0);
+        assert!(h0.iter().any(|t| t == "West Subtotal"), "missing West Subtotal in header: {:?}", h0);
+        // Quarter-level header (row 1) is empty above subtotal slots.
+        let h1: Vec<String> = m.header_rows.get(1).map(|r| r.iter().map(|c| c.text.clone()).collect()).unwrap_or_default();
+        assert!(h1.contains(&"Q1".to_string()) && h1.contains(&"Q2".to_string()), "missing quarter headers: {:?}", h1);
+        // Product A: East Q1=10,Q2=20, East subtotal=30, West Q1=30,Q2=40, West subtotal=70.
+        let b: Vec<Vec<String>> = m.body_rows.iter().map(|r| r.iter().map(|c| c.text.clone()).collect()).collect();
+        let a = b.iter().find(|r| r.first().map(|s| s == "A").unwrap_or(false)).expect("row A");
+        assert_eq!(a, &vec!["A".to_string(), "10".to_string(), "20".to_string(), "30".to_string(), "30".to_string(), "40".to_string(), "70".to_string()], "row A: {:?}", a);
+        // B has only East data; East subtotal=5.
+        let pb = b.iter().find(|r| r.first().map(|s| s == "B").unwrap_or(false)).expect("row B");
+        assert_eq!(pb, &vec!["B".to_string(), "5".to_string(), "".to_string(), "5".to_string(), "".to_string(), "".to_string(), "".to_string()], "row B: {:?}", pb);
     }
 }

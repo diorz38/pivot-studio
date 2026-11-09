@@ -183,15 +183,44 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             panel_header(ui, "Data Source / Filters", &t);
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Data source:").color(t.text_muted));
-                let mut src = app.source_name.clone().unwrap_or_default();
-                if ui.add(egui::TextEdit::singleline(&mut src).hint_text("e.g. my_data.csv or Sales table").desired_width(320.0)).changed() {
-                    app.source_name = if src.trim().is_empty() { None } else { Some(src) };
-                    if app.table.is_some() || app.db_source.is_some() { app.request_pivot_recompute(); }
+                // Show full real source text as the editable default; editing changes only
+                // the persisted Notes label (source_label), not the real data source.
+                let real_source = app
+                    .table
+                    .as_ref()
+                    .and_then(|tbl| tbl.source.clone())
+                    .or_else(|| app.source_name.clone())
+                    .unwrap_or_default();
+                let mut src = app
+                    .active_spec()
+                    .source_label
+                    .clone()
+                    .unwrap_or_else(|| real_source.clone());
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut src)
+                        .hint_text("Sumber data label (editable, does not change real data source)")
+                        .desired_width(420.0),
+                );
+                if resp.changed() {
+                    let trimmed = src.trim();
+                    // Preserve spaces as typed (e.g. "Data Mira ...") to avoid fighting the cursor;
+                    // treat blank/real-source-equivalent as no custom label override.
+                    app.active_spec_mut().source_label = if trimmed.is_empty()
+                        || (!real_source.is_empty() && trimmed == real_source.trim())
+                    {
+                        None
+                    } else {
+                        Some(src.clone())
+                    };
+                    if app.table.is_some() || app.db_source.is_some() {
+                        app.request_pivot_recompute();
+                    }
                 }
                 if ui.small_button("Manage columns...").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.source", &Value::Null, &ctx); }
                 let stale = app.stale_spec_refs(&app.active_spec().clone());
                 if !stale.is_empty() { ui.label(RichText::new(format!("Stale refs: {}", stale.join(", "))).color(egui::Color32::from_rgb(220, 120, 60)).size(11.0)); }
             });
+            ui.label(RichText::new("Edit to change only the Notes/‘Sumber data’ label in pivot output (real data source is unchanged).").color(t.text_muted).size(10.5));
             ui.add_space(4.0);
             if app.table.is_some() || app.db_source.is_some() { filters_ui(app, ui, &t); }
             else { ui.label(RichText::new("Import data (CSV/XLSX/DBF) or connect SQLite to configure filters.").color(t.text_muted)); }
@@ -246,17 +275,70 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         if lang != app.active_spec().output_language { app.active_spec_mut().output_language = lang; app.request_pivot_recompute(); }
     });
     let mut row_sub = app.active_spec().subtotals.row_subtotals;
-    if ui.checkbox(&mut row_sub, format!("Row subtotals##subtotals_{}", app.active_worksheet)).changed() { app.active_spec_mut().subtotals.row_subtotals = row_sub; app.request_pivot_recompute(); }
+    let row_sub_label = if app.active_spec().rows.len() > 1 {
+        "Row subtotals (shown when 2+ row fields)".to_string()
+    } else {
+        "Row subtotals".to_string()
+    };
+    if ui
+        .checkbox(&mut row_sub, format!("{row_sub_label}##subtotals_{}", app.active_worksheet))
+        .on_hover_text("Show/hide subtotal rows for grouped row fields (requires 2 or more row fields).")
+        .changed()
+    {
+        app.active_spec_mut().subtotals.row_subtotals = row_sub;
+        app.request_pivot_recompute();
+    }
+    let mut col_tot = app.active_spec().subtotals.column_totals;
+    let col_tot_enabled = !app.active_spec().columns.is_empty();
+    ui.add_enabled_ui(col_tot_enabled, |ui| {
+        if ui
+            .checkbox(&mut col_tot, format!("Column totals##col_totals_{}", app.active_worksheet))
+            .on_hover_text("Add a Total column across pivot columns (when column fields are configured).")
+            .changed()
+        {
+            app.active_spec_mut().subtotals.column_totals = col_tot;
+            app.request_pivot_recompute();
+        }
+    });
 
     ui.add_space(6.0);
     ui.label(RichText::new("Table title").color(t.text_strong));
-    let auto = app.active_model().map(|m| if m.title_pinned { "(pinned)".to_string() } else { m.title.clone() }).unwrap_or_else(|| "(recompute to preview)".to_string());
+    let auto = app
+        .active_model()
+        .map(|m| {
+            if m.title_pinned {
+                "(pinned)".to_string()
+            } else {
+                m.title.clone()
+            }
+        })
+        .unwrap_or_else(|| "(recompute to preview)".to_string());
     let mut pinned = app.active_spec().title_override.is_some();
-    if ui.checkbox(&mut pinned, format!("Pin title##pin_title_{}", app.active_worksheet)).changed() { app.set_title_pinned(pinned); }
+    if ui
+        .checkbox(&mut pinned, format!("Pin title##pin_title_{}", app.active_worksheet))
+        .changed()
+    {
+        app.set_title_pinned(pinned);
+    }
     if let Some(mut over) = app.active_spec().title_override.clone() {
-        if ui.add(egui::TextEdit::singleline(&mut over).id(egui::Id::new(("title_override", app.active_worksheet)))).changed() { app.active_spec_mut().title_override = Some(over); app.request_pivot_recompute(); }
-        if ui.small_button("Reset title to auto").clicked() { app.set_title_pinned(false); }
-    } else { ui.label(RichText::new(format!("Auto: {auto}")).color(t.text_muted).size(11.0)); }
+        // normalize legacy/base display: show without duplicated worksheet prefix
+        let prefix = app.active_sheet().table_title_prefix();
+        let shown = over.strip_prefix(&format!("{prefix} ")).unwrap_or(&over).to_string();
+        over = shown;
+        if ui
+            .add(egui::TextEdit::singleline(&mut over).id(egui::Id::new(("title_override", app.active_worksheet))).hint_text("Table title (without Table NN prefix)"))
+            .changed()
+        {
+            let v = over.trim().to_string();
+            app.active_spec_mut().title_override = if v.is_empty() { None } else { Some(v) };
+            app.request_pivot_recompute();
+        }
+        if ui.small_button("Reset title to auto").clicked() {
+            app.set_title_pinned(false);
+        }
+    } else {
+        ui.label(RichText::new(format!("Auto: {auto}")).color(t.text_muted).size(11.0));
+    }
 
     ui.add_space(6.0);
     ui.label(RichText::new("Stub head (col 1)").color(t.text_strong));
@@ -344,6 +426,7 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     ui.add_space(6.0);
     ui.group(|ui| {
         ui.label(RichText::new("Columns (split, optional)").strong().color(t.text_strong));
+        ui.label(RichText::new("Enable 'Subtotal' on a column level to add subtotal columns for that grouping (useful with 2+ column levels).").color(t.text_muted).size(11.0));
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt(("pick_col_field", sid)).selected_text(&app.pick_col_field).width(140.0).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_col_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_col_field) { app.pick_col_as_type = dt; } } } });
             egui::ComboBox::from_id_salt(("pick_col_type", sid)).selected_text(data_type_label(app.pick_col_as_type)).width(120.0).show_ui(ui, |ui| { for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] { ui.selectable_value(&mut app.pick_col_as_type, dt, data_type_label(dt)); } });
@@ -351,17 +434,28 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
         });
         let mut remove_col: Option<usize> = None;
         let mut move_col: Option<(usize, usize)> = None;
+        let mut toggle_col_sub: Option<(usize, bool)> = None;
         let col_len = app.active_spec().columns.len();
+        let col_subs = app.active_spec().effective_column_subtotals();
         for (i, f) in app.active_spec().columns.clone().iter().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&f.name).color(t.text));
+                let mut sub = *col_subs.get(i).unwrap_or(&false);
+                if ui.checkbox(&mut sub, format!("Subtotal##colsub_{sid}_{i}")).on_hover_text("Add subtotal columns for this column grouping level.").changed() {
+                    toggle_col_sub = Some((i, sub));
+                }
                 if ui.small_button("x").clicked() { remove_col = Some(i); }
                 if i > 0 && ui.small_button("^").clicked() { move_col = Some((i, i - 1)); }
                 if i + 1 < col_len && ui.small_button("v").clicked() { move_col = Some((i, i + 1)); }
             });
         }
         if col_len == 0 { ui.label(RichText::new("(no column split)").color(t.text_disabled)); }
-        if let Some(i) = remove_col { app.remove_col_field(i); } else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
+        if let Some((i, v)) = toggle_col_sub {
+            let spec = app.active_spec_mut();
+            let mut subs = spec.effective_column_subtotals();
+            if i < subs.len() { subs[i] = v; spec.column_subtotals = subs; }
+            app.request_pivot_recompute();
+        } else if let Some(i) = remove_col { app.remove_col_field(i); } else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
     });
 
     ui.add_space(6.0);

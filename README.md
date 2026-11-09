@@ -6,7 +6,7 @@ Pivot Studio ingests data from heterogeneous sources (CSV/XLSX/DBF/SQLite; MySQL
 
 ## Status
 
-**v0.2.0** (on `feature/source-mgmt-multi-worksheet`): source-data column selection (pre-worksheet management page), multi-worksheet projects (`.pivot` workspace v2 with v1 migration), XLSX multi-sheet export, HTML tabbed export, PDF export of the active sheet (recompute between sheets as needed), themes/brightness, and dev-mode terminal instrumentation (`[pivot-dev]`). See [PIVOT_STUDIO_PLAN.md](PIVOT_STUDIO_PLAN.md) and [V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md](V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md).
+**v0.2.1** (on `feature/source-mgmt-multi-worksheet`): source-data column selection (pre-worksheet management page), multi-worksheet projects (`.pivot` workspace v2 with v1 migration), XLSX multi-sheet export, HTML tabbed export, PDF export of the active sheet (recompute between sheets as needed), themes/brightness, and dev-mode terminal instrumentation (`[pivot-dev]`). See [PIVOT_STUDIO_PLAN.md](PIVOT_STUDIO_PLAN.md) and [V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md](V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md).
 
 ## Workspace
 

@@ -161,4 +161,14 @@ mod tests {
         assert_eq!(t.columns[1].effective_type(), DataType::String);
         assert_eq!(t.columns[2].effective_type(), DataType::Decimal);
     }
+
+    #[test]
+    fn csv_preserves_leading_zero_codes() {
+        let csv = "kode,nama\n00123,A\n0456,B\n0007,C\n";
+        let t = load_csv_from_str(csv, b',', true, None).unwrap();
+        assert_eq!(t.columns[0].effective_type(), DataType::String);
+        assert_eq!(t.get(0, 0), Some(&pivot_core::Value::String("00123".to_string())));
+        assert_eq!(t.get(1, 0), Some(&pivot_core::Value::String("0456".to_string())));
+        assert_eq!(t.get(2, 0), Some(&pivot_core::Value::String("0007".to_string())));
+    }
 }

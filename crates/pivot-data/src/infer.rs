@@ -86,6 +86,14 @@ pub fn parse_cell(s: &str, target: DataType) -> Value {
     }
 }
 
+/// True for numeric-looking identifiers whose leading zero(s) are meaningful
+/// (e.g. postal codes, account numbers, NIK fragments: "00123", "0123", "00").
+/// Plain "0" (and "+0"/"-0") remains numeric.
+fn has_meaningful_leading_zero(n: &str) -> bool {
+    let digits = n.strip_prefix(['+', '-'].as_ref()).unwrap_or(n);
+    digits.len() > 1 && digits.starts_with('0') && digits.bytes().all(|b| b.is_ascii_digit())
+}
+
 fn infer_cell(s: &str) -> DataType {
     let t = s.trim();
     let lower = t.to_ascii_lowercase();
@@ -99,6 +107,10 @@ fn infer_cell(s: &str) -> DataType {
         return DataType::Date;
     }
     let n = t.replace(',', "");
+    if has_meaningful_leading_zero(&n) {
+        // Preserve leading zeros (IDs/codes). Treat as String even if numeric.
+        return DataType::String;
+    }
     if n.parse::<i64>().is_ok() {
         return DataType::Integer;
     }
@@ -172,5 +184,24 @@ mod tests {
         let rows = vec![vec!["1".to_string()], vec!["2.5".to_string()]];
         let cols = infer_columns(&headers, &rows);
         assert_eq!(cols[0].effective_type(), DataType::Decimal);
+    }
+
+    #[test]
+    fn preserves_leading_zero_numeric_codes_as_string() {
+        // Numeric-looking identifiers/codes with meaningful leading zeros must stay String
+        // (importing as Integer would drop leading zeros: "00123" -> 123).
+        let headers = vec!["kode".to_string(), "plain".to_string(), "zero".to_string()];
+        let rows = vec![
+            vec!["00123".to_string(), "123".to_string(), "0".to_string()],
+            vec!["0456".to_string(), "456".to_string(), "0".to_string()],
+            vec!["0007".to_string(), "7".to_string(), "0".to_string()],
+        ];
+        let cols = infer_columns(&headers, &rows);
+        assert_eq!(cols[0].effective_type(), DataType::String, "leading-zero codes must infer as String");
+        assert_eq!(cols[1].effective_type(), DataType::Integer, "plain integers remain Integer");
+        assert_eq!(cols[2].effective_type(), DataType::Integer, "plain zero remains Integer");
+        let parsed = parse_row_strings(&rows[0], &cols);
+        assert_eq!(parsed[0], Value::String("00123".to_string()));
+        assert_eq!(parsed[1], Value::Integer(123));
     }
 }

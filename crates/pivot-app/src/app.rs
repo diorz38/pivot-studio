@@ -78,7 +78,16 @@ impl WorksheetState {
     }
     pub fn from_workspace(ws: WorkspaceWorksheet, fallback_number: usize) -> Self {
         let number = if ws.number == 0 { fallback_number } else { ws.number };
-        Self { id: ws.id, name: ws.name, number, spec: ws.spec, model: None }
+        let mut spec = ws.spec;
+        if let Some(over) = spec.title_override.as_mut() {
+            let prefix = format!("Table {:02}", number);
+            loop {
+                let stripped = over.strip_prefix(&format!("{prefix} ")).or_else(|| if over.as_str() == prefix { Some("") } else { None });
+                if let Some(s) = stripped { *over = s.trim().to_string(); } else { break; }
+            }
+            if over.is_empty() { spec.title_override = None; }
+        }
+        Self { id: ws.id, name: ws.name, number, spec, model: None }
     }
     pub fn default_name(number: usize) -> String {
         format!("Sheet {:02}", number)
@@ -143,7 +152,7 @@ pub enum DbSource {
 
 fn default_spec() -> PivotSpec {
     PivotSpec {
-        subtotals: SubtotalConfig { row_subtotals: true, grand_total: true },
+        subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
         ..Default::default()
     }
 }
@@ -385,7 +394,13 @@ impl PivotApp {
                     );
                     let mut applied_name = None;
                     if let Some(ws) = self.worksheets.iter_mut().find(|w| w.id == sheet_id) {
-                        model.title = format!("{} {}", ws.table_title_prefix(), model.title);
+                        let prefix = ws.table_title_prefix();
+                        let base = model.title
+                            .strip_prefix(&format!("{prefix} "))
+                            .or_else(|| model.title.strip_prefix(&prefix))
+                            .unwrap_or(&model.title)
+                            .trim();
+                        model.title = if base.is_empty() { prefix } else { format!("{prefix} {base}") };
                         applied_name = Some(ws.name.clone());
                         ws.model = Some(model);
                     }
@@ -696,8 +711,12 @@ impl PivotApp {
     pub fn add_col_field(&mut self, name: String) {
         if !self.active_spec().columns.iter().any(|f| f.name == name) {
             let n = name.clone();
-            self.active_spec_mut().columns.push(FieldRef::new(name));
-            if self.active_spec().values.is_empty() {
+            let spec = self.active_spec_mut();
+            spec.columns.push(FieldRef::new(name));
+            spec.column_subtotals.push(false);
+            let has_vals = !spec.values.is_empty();
+            let _ = spec;
+            if !has_vals {
                 self.status = format!("Column '{n}' added. Now add a Values field (Sum/Count/Avg) to compute the pivot.");
                 self.active_sheet_mut().model = None;
             } else { self.request_pivot_recompute(); }
@@ -712,7 +731,12 @@ impl PivotApp {
         if idx < self.active_spec().rows.len() { self.active_spec_mut().rows.remove(idx); self.request_pivot_recompute(); }
     }
     pub fn remove_col_field(&mut self, idx: usize) {
-        if idx < self.active_spec().columns.len() { self.active_spec_mut().columns.remove(idx); self.request_pivot_recompute(); }
+        let spec = self.active_spec_mut();
+        if idx < spec.columns.len() {
+            spec.columns.remove(idx);
+            if idx < spec.column_subtotals.len() { spec.column_subtotals.remove(idx); }
+            self.request_pivot_recompute();
+        }
     }
     pub fn remove_value_field(&mut self, idx: usize) {
         if idx < self.active_spec().values.len() {
@@ -728,8 +752,19 @@ impl PivotApp {
         if from < len && to < len && from != to { let item = self.active_spec_mut().rows.remove(from); self.active_spec_mut().rows.insert(to, item); self.request_pivot_recompute(); }
     }
     pub fn move_col_field(&mut self, from: usize, to: usize) {
-        let len = self.active_spec().columns.len();
-        if from < len && to < len && from != to { let item = self.active_spec_mut().columns.remove(from); self.active_spec_mut().columns.insert(to, item); self.request_pivot_recompute(); }
+        let spec = self.active_spec_mut();
+        let len = spec.columns.len();
+        if from < len && to < len && from != to {
+            let item = spec.columns.remove(from);
+            spec.columns.insert(to, item);
+            let mut subs = spec.effective_column_subtotals();
+            if from < subs.len() && to < subs.len() {
+                let s = subs.remove(from);
+                subs.insert(to, s);
+                spec.column_subtotals = subs;
+            }
+            self.request_pivot_recompute();
+        }
     }
     pub fn clear_layout(&mut self) {
         let i = self.active_worksheet.min(self.worksheets.len().saturating_sub(1));
@@ -737,6 +772,7 @@ impl PivotApp {
         if let Some(ws) = self.worksheets.get_mut(i) {
             ws.spec.rows.clear();
             ws.spec.columns.clear();
+            ws.spec.column_subtotals.clear();
             ws.spec.values.clear();
             ws.spec.filters.clear();
             ws.model = None;
@@ -789,9 +825,22 @@ impl PivotApp {
     }
     pub fn set_title_pinned(&mut self, pinned: bool) {
         if pinned {
-            let current = self.active_model().map(|m| m.title.clone()).or(self.active_spec().title_override.clone()).unwrap_or_default();
-            self.active_spec_mut().title_override = Some(current);
-        } else { self.active_spec_mut().title_override = None; }
+            let current = self
+                .active_model()
+                .map(|m| m.title.clone())
+                .or(self.active_spec().title_override.clone())
+                .unwrap_or_default();
+            let prefix = self.active_sheet().table_title_prefix();
+            let base = current
+                .strip_prefix(&format!("{prefix} "))
+                .or_else(|| current.strip_prefix(&prefix))
+                .unwrap_or(&current)
+                .trim()
+                .to_string();
+            self.active_spec_mut().title_override = if base.is_empty() { None } else { Some(base) };
+        } else {
+            self.active_spec_mut().title_override = None;
+        }
         self.request_pivot_recompute();
     }
     pub fn set_footer_band_decimals(&mut self, idx: usize, decimals: Option<u8>) {
@@ -1068,7 +1117,7 @@ impl PivotApp {
             "format.color_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = TableColorThemeId::parse(id) { self.table_color_theme = theme; self.status = format!("Color theme set to {}.", theme.label()); } } }
             "format.border_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = BorderThemeId::parse(id) { self.table_border_theme = theme; self.status = format!("Border theme set to {}.", theme.label()); } } }
             "view.reset_layout" => { self.status = "Layout reset (placeholder).".to_string(); }
-            "help.about" => { self.status = "Pivot Studio v0.2.0 - polished pivot tables (CSV/XLSX/DBF/SQLite), source column selection, multi-worksheet projects, themes, export, .pivot workspace. Recompute between sheets as needed; PDF exports the active sheet.".to_string(); }
+            "help.about" => { self.status = "Pivot Studio v0.2.1 - polished pivot tables (CSV/XLSX/DBF/SQLite), source column selection, multi-worksheet projects, themes, export, .pivot workspace. Recompute between sheets as needed; PDF exports the active sheet.".to_string(); }
             _ => { self.status = format!("Command '{id}' is a placeholder."); }
         }
     }

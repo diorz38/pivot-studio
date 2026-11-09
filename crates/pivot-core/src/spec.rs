@@ -103,6 +103,9 @@ pub struct SubtotalConfig {
     pub row_subtotals: bool,
     /// Legacy flag; when `PivotSpec::footer_bands` is empty, a Grand Total band is emitted if true.
     pub grand_total: bool,
+    /// Show a Total column across all pivot column values (when column fields are configured).
+    #[serde(default)]
+    pub column_totals: bool,
 }
 
 /// Configures one footer band in the pivot output (AC3.2). Bands render in order.
@@ -189,9 +192,24 @@ pub struct PivotSpec {
     /// Language for auto-generated pivot output labels (title, subtotals, footer bands, notes).
     #[serde(default = "default_output_language")]
     pub output_language: OutputLanguage,
+    /// Optional editable data source label shown in Notes (per-worksheet, persisted). `None` => use table source path/name.
+    #[serde(default)]
+    pub source_label: Option<String>,
+    /// Per column-field level: show subtotal/total columns for that grouping level when it has 2+ values
+    /// or as configured (parallel to `columns`). `true` inserts subtotal columns at group boundaries for
+    /// that level. Missing/short entries default to `false` for backward compatibility.
+    #[serde(default)]
+    pub column_subtotals: Vec<bool>,
 }
 
 impl PivotSpec {
+    /// Normalized per-column-level subtotal flags aligned to `columns.len()`.
+    pub fn effective_column_subtotals(&self) -> Vec<bool> {
+        let mut v = self.column_subtotals.clone();
+        v.resize(self.columns.len(), false);
+        v
+    }
+
     /// Resolve effective footer band specs, preserving legacy default behavior.
     pub fn effective_footer_bands(&self) -> Vec<FooterBandSpec> {
         if !self.footer_bands.is_empty() {
