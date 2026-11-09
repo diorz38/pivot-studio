@@ -1,4 +1,4 @@
-//! App bar and status bar (DesignCraft chrome pattern, original code).
+﻿  //! App bar and status bar (DesignCraft chrome pattern, original code).
 //! No generic OS title bar: Home icon leads into the main menu, with custom window controls.
 
 use crate::app::PivotApp;
@@ -11,7 +11,7 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
         .fill(t.app_bar)
         .stroke(egui::Stroke::new(1.0_f32, t.border))
         .inner_margin(egui::Margin::symmetric(8, 4));
-    let resp = frame.show(ui, |ui| {
+    frame.show(ui, |ui| {
         let height = 30.0;
         ui.set_min_height(height);
         ui.horizontal_centered(|ui| {
@@ -41,29 +41,34 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
             ui.style_mut().spacing.button_padding = egui::vec2(8.0, 3.0);
             app.menu_bar(ui);
 
-            // Right side: centered-ish title (fills) + caption buttons.
+            // Right side: caption buttons + phase label. Layout reserves space for captions.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 caption_buttons(app, ui);
                 ui.add_space(8.0);
                 ui.label(
-                    egui::RichText::new(format!("Phase 1 - {}", app.brightness.label()))
+                    egui::RichText::new(format!("Phase 5/6 • {}", app.brightness.label()))
                         .color(t.text_muted)
                         .size(11.5),
                 );
+                // Drag handle in the remaining (center) gap — placed after right-aligned items so it fills leftover space.
+                let drag_w = ui.available_width().max(40.0);
+                let (drag_rect, drag_resp) = ui.allocate_exact_size(
+                    egui::vec2(drag_w, height),
+                    Sense::click_and_drag(),
+                );
+                let _ = drag_rect;
+                if drag_resp.drag_started_by(egui::PointerButton::Primary) {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+                }
+                if drag_resp.double_clicked() {
+                    let on = !ui.input(|i| i.viewport().maximized.unwrap_or(false));
+                    let ctx = ui.ctx().clone();
+                    app.dispatch("window.maximize", &serde_json::json!({"on": on}), &ctx);
+                }
             });
         });
     });
-
-    // Drag the undecorated window by its app bar.
-    let drag = resp.response.interact(Sense::click_and_drag());
-    if drag.drag_started_by(egui::PointerButton::Primary) {
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        let on = !ui.input(|i| i.viewport().maximized.unwrap_or(false));
-        let ctx = ui.ctx().clone();
-        app.dispatch("window.maximize", &serde_json::json!({"on": on}), &ctx);
-    }
 }
 
 fn paint_home_icon(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
@@ -84,7 +89,12 @@ fn paint_home_icon(painter: &egui::Painter, c: egui::Pos2, color: Color32) {
         egui::pos2(c.x - 1.4, c.y + 1.6),
         egui::pos2(c.x + 1.4, c.y + s),
     );
-    painter.rect_stroke(door, 0.0, Stroke::new(1.0_f32, color), egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        door,
+        0.0,
+        Stroke::new(1.0_f32, color),
+        egui::StrokeKind::Inside,
+    );
 }
 
 fn caption_buttons(app: &mut PivotApp, ui: &mut egui::Ui) {
@@ -121,8 +131,18 @@ fn caption_buttons(app: &mut PivotApp, ui: &mut egui::Ui) {
             Color32::TRANSPARENT
         };
         ui.painter().rect_filled(rect, 0.0, bg);
-        let color = if hovered && cmd == "window.close" { Color32::WHITE } else { t.text };
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(13.0), color);
+        let color = if hovered && cmd == "window.close" {
+            Color32::WHITE
+        } else {
+            t.text
+        };
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::proportional(13.0),
+            color,
+        );
         if response.clicked() {
             let params = if cmd == "window.maximize" {
                 serde_json::json!({"on": !maximized})
@@ -148,6 +168,11 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                     load.progress.clone()
                 } else if app.pivot_computing.is_some() {
                     "Computing pivot...".to_string()
+                } else if app.exporting.is_some() {
+                    app.exporting
+                        .as_ref()
+                        .map(|e| e.progress.clone())
+                        .unwrap_or_else(|| "Exporting...".to_string())
                 } else {
                     app.status.clone()
                 };
@@ -166,10 +191,30 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                         app.cancel_pivot();
                     }
                 }
+                if app.exporting.is_some() {
+                    ui.add_space(8.0);
+                    ui.spinner();
+                    if ui.small_button("Cancel export").clicked() {
+                        app.cancel_export();
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let src = if let Some(db) = &app.db_source {
+                        match db {
+                            crate::app::DbSource::Sqlite { table, .. } => {
+                                format!("DB:sqlite/{table}")
+                            }
+                            crate::app::DbSource::MySql(p) => {
+                                format!("DB:mysql/{}/{}", p.database, p.table)
+                            }
+                        }
+                    } else {
+                        "File".to_string()
+                    };
                     ui.label(
                         egui::RichText::new(format!(
-                            "Brightness: {} | Rows: {} | Cols: {}",
+                            "{} | {} | Rows: {} | Cols: {}",
+                            src,
                             app.brightness.label(),
                             app.row_count(),
                             app.col_count()
