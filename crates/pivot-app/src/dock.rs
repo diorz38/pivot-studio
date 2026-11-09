@@ -129,70 +129,7 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
             }
         });
 
-    egui::SidePanel::left("dock_left")
-        .resizable(true)
-        .default_width(300.0)
-        .min_width(190.0)
-        .frame(egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
-        .show_inside(ui, |ui| {
-            panel_header(ui, "Fields", &t);
-            if let Some(name) = &app.source_name {
-                ui.label(RichText::new(format!("Source: {name}")).color(t.text).size(12.0));
-            }
-            ui.horizontal(|ui| {
-                if ui.small_button("CSV").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.csv", &Value::Null, &ctx); }
-                if ui.small_button("Excel").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.xlsx", &Value::Null, &ctx); }
-                if ui.small_button("DBF").clicked() { let ctx = ui.ctx().clone(); app.dispatch("file.import.dbf", &Value::Null, &ctx); }
-                if ui.small_button("Database").clicked() { let ctx = ui.ctx().clone(); app.dispatch("data.connect", &Value::Null, &ctx); }
-            });
-            if app.loading.is_some() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    let msg = app.loading.as_ref().map(|l| l.progress.clone()).unwrap_or_default();
-                    ui.label(RichText::new(msg).color(t.text_muted).size(11.0));
-                    if ui.small_button("Cancel").clicked() { app.cancel_load(); }
-                });
-            }
-            ui.separator();
-
-            if app.table.is_some() {
-                egui::Frame::new()
-                    .fill(t.canvas)
-                    .stroke(egui::Stroke::new(1.0_f32, t.border))
-                    .inner_margin(egui::Margin::same(8))
-                    .corner_radius(4.0)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("How to build a pivot").strong().color(t.text_strong).size(12.0));
-                        ui.label(RichText::new("Use the Pivot Layout panel (right):\n1) Pick a column as Row (grouping) and its type, then Add\n2) Pick a column as Column (optional) and its type, then Add\n3) Pick a column as Value and calculation (Sum/Count/Avg...), then Add\nAt least one Value is required to show the pivot result.").color(t.text_muted).size(11.0));
-                    });
-                ui.add_space(4.0);
-            }
-
-            let fields: Vec<(String, DataType)> = app.table.as_ref().map(|tbl| tbl.columns.iter().map(|c| (c.name.clone(), c.effective_type())).collect()).unwrap_or_default();
-            if fields.is_empty() {
-                ui.label(RichText::new("No dataset loaded.").color(t.text_disabled));
-            } else {
-                egui::ScrollArea::vertical().id_salt("fields_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                    let mut type_change: Option<(usize, DataType)> = None;
-                    for (i, (name, current)) in fields.iter().enumerate() {
-                        ui.group(|ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(name).strong().color(t.text_strong).size(12.0));
-                                let mut effective = *current;
-                                egui::ComboBox::from_id_salt(("type", i)).selected_text(format!("{effective:?}")).width(88.0).show_ui(ui, |ui| {
-                                    for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] {
-                                        ui.selectable_value(&mut effective, dt, format!("{dt:?}"));
-                                    }
-                                });
-                                if effective != *current { type_change = Some((i, effective)); }
-                            });
-                            ui.label(RichText::new(format!("Type: {:?}", current)).color(t.text_muted).size(10.0));
-                        });
-                    }
-                    if let Some((i, dt)) = type_change { app.reinterpret_column(i, dt); }
-                });
-            }
-        });
+    // Left panel removed for now; Pivot Layout (right) provides field selection.
 
     egui::SidePanel::right("dock_right")
         .resizable(true)

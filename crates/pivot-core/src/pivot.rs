@@ -485,15 +485,61 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     }
 }
 
+fn humanize_name(name: &str) -> String {
+    name.replace('_', " ").trim().to_string()
+}
+
+fn join_natural(items: &[String]) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].clone(),
+        _ => {
+            let (head, tail) = items.split_at(items.len() - 1);
+            format!("{} and {}", head.join(", "), tail[0])
+        }
+    }
+}
+
+fn value_phrase(v: &ValueField) -> String {
+    let field = humanize_name(&v.field.name);
+    match v.aggregate {
+        Aggregate::Count | Aggregate::CountDistinct => format!("Number of {field}"),
+        Aggregate::Sum => format!("Sum of {field}"),
+        Aggregate::Average => format!("Average of {field}"),
+        Aggregate::Min => format!("Minimum of {field}"),
+        Aggregate::Max => format!("Maximum of {field}"),
+    }
+}
+
 fn auto_title(spec: &PivotSpec) -> String {
     let vals = if spec.values.is_empty() {
         "Values".to_string()
     } else {
-        spec.values.iter().map(|v| v.effective_name()).collect::<Vec<_>>().join(", ")
+        join_natural(&spec.values.iter().map(value_phrase).collect::<Vec<_>>())
     };
-    let rows = if spec.rows.is_empty() { "All".to_string() } else { spec.rows.iter().map(|r| r.name.clone()).collect::<Vec<_>>().join(", ") };
-    let cols = if spec.columns.is_empty() { String::new() } else { format!(" by {}", spec.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>().join(", ")) };
-    format!("{vals} by {rows}{cols}")
+    let cols = spec
+        .columns
+        .iter()
+        .map(|c| humanize_name(&c.name))
+        .collect::<Vec<_>>();
+    let rows = spec
+        .rows
+        .iter()
+        .map(|r| humanize_name(&r.name))
+        .collect::<Vec<_>>();
+
+    let mut out = vals;
+    if !cols.is_empty() {
+        out.push_str(" according to ");
+        out.push_str(&join_natural(&cols));
+    }
+    if !rows.is_empty() {
+        out.push_str(" menurut ");
+        out.push_str(&join_natural(&rows));
+    } else if cols.is_empty() {
+        out.push_str(" (all data)");
+    }
+    out
 }
 
 #[cfg(test)]
