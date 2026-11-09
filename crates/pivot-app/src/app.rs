@@ -253,6 +253,8 @@ impl PivotApp {
         for ws in &mut self.worksheets {
             ws.model = None;
         }
+        crate::devlog!("set_column_selected: '{}'={} selected_count={:?} (cleared models, specs preserved) sheets=[{}]",
+            name, selected, self.selected_columns.as_ref().map(|s| s.len()), self.debug_sheet_summary());
     }
 
     pub fn select_all_columns(&mut self, selected: bool) {
@@ -263,6 +265,8 @@ impl PivotApp {
             BTreeSet::new()
         });
         for ws in &mut self.worksheets { ws.model = None; }
+        crate::devlog!("select_all_columns: {} selected_count={:?} (cleared models, specs preserved) sheets=[{}]",
+            selected, self.selected_columns.as_ref().map(|s| s.len()), self.debug_sheet_summary());
     }
 
     pub fn stale_spec_refs(&self, spec: &PivotSpec) -> Vec<String> {
@@ -640,7 +644,7 @@ impl PivotApp {
 
     pub fn debug_sheet_summary(&self) -> String {
         self.worksheets.iter().enumerate().map(|(i,w)| {
-            format!("{}:{}#{} r{}c{}v{}f{}", i, w.name, w.number, w.spec.rows.len(), w.spec.columns.len(), w.spec.values.len(), w.spec.filters.len())
+            format!("{}:{}#{}[{}] r{}c{}v{}f{}{}", i, w.name, w.number, w.id, w.spec.rows.len(), w.spec.columns.len(), w.spec.values.len(), w.spec.filters.len(), if w.model.is_some() { "[M]" } else { "" })
         }).collect::<Vec<_>>().join(" | ")
     }
 
@@ -950,9 +954,9 @@ impl PivotApp {
                             self.status = format!("Workspace opened (SQLite {} / {}).", sp.display(), table);
                             self.sync_layout_pickers();
                         }
-                        Err(e) => self.status = format!("Workspace opened (SQLite), preview failed: {e}. Reconnect in Database panel."),
+                        Err(e) => { crate::devlog!("open_workspace: sqlite preview failed: {e}"); self.status = format!("Workspace opened (SQLite), preview failed: {e}. Reconnect in Database panel."); }
                     }
-                } else { self.status = format!("Workspace opened, SQLite file not found: {}. Reconnect in Database panel.", sp.display()); }
+                } else { crate::devlog!("open_workspace: sqlite file missing: {}", sp.display()); self.status = format!("Workspace opened, SQLite file not found: {}. Reconnect in Database panel.", sp.display()); }
             }
             WorkspaceSource::MySql { profile } => {
                 self.db_source = Some(DbSource::MySql(profile.clone()));
@@ -960,9 +964,12 @@ impl PivotApp {
                 self.db_mysql_user = profile.user; self.db_mysql_table = profile.table; self.db_mysql_ssl = profile.ssl;
                 self.db_mysql_cred_mode_session = matches!(profile.credential_mode, CredentialMode::SessionOnly);
                 self.db_panel_open = false; self.on_home = false;
+                crate::devlog!("open_workspace: mysql source restore disabled (setup preserved)");
                 self.status = "Workspace has a MySQL source, but MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string();
             }
         }
+        crate::devlog!("open_workspace: final on_home={} on_source_page={} has_table={} active={} sheets=[{}]",
+            self.on_home, self.on_source_page, self.table.is_some(), self.active_worksheet, self.debug_sheet_summary());
     }
 
     pub fn export_pivot(&mut self, format: &str) {
