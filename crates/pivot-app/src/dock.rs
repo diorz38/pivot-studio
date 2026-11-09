@@ -160,6 +160,19 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.label(RichText::new("Options").strong().color(t.text_strong));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Output language").color(t.text_muted));
+                    egui::ComboBox::from_id_salt("output_language")
+                        .selected_text(app.pivot_spec.output_language.label())
+                        .width(160.0)
+                        .show_ui(ui, |ui| {
+                            for lang in pivot_core::OutputLanguage::ALL {
+                                if ui.selectable_value(&mut app.pivot_spec.output_language, lang, lang.label()).changed() {
+                                    app.request_pivot_recompute();
+                                }
+                            }
+                        });
+                });
                 let mut row_sub = app.pivot_spec.subtotals.row_subtotals;
                 if ui.checkbox(&mut row_sub, "Row subtotals").changed() { app.pivot_spec.subtotals.row_subtotals = row_sub; app.request_pivot_recompute(); }
 

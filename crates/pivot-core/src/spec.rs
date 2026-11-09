@@ -5,6 +5,29 @@ use serde::{Deserialize, Serialize};
 
 fn default_true() -> bool { true }
 
+fn default_output_language() -> OutputLanguage { OutputLanguage::IdEn }
+
+/// Language for auto-generated pivot output labels (title, subtotals, footer bands, notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputLanguage {
+    En,
+    Id,
+    #[default]
+    IdEn,
+}
+
+impl OutputLanguage {
+    pub fn label(self) -> &'static str {
+        match self {
+            OutputLanguage::En => "English",
+            OutputLanguage::Id => "Bahasa Indonesia",
+            OutputLanguage::IdEn => "Bilingual (ID/EN)",
+        }
+    }
+    pub const ALL: [OutputLanguage; 3] = [OutputLanguage::En, OutputLanguage::Id, OutputLanguage::IdEn];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldRef {
     /// Column name in the source `DataTable`.
@@ -115,16 +138,32 @@ impl FooterBandSpec {
         Self { kind: crate::model::FooterBandKind::Count, label: None, aggregate: Some(Aggregate::Count), field: None, enabled: true }
     }
     pub fn effective_label(&self) -> String {
+        self.effective_label_lang(OutputLanguage::En)
+    }
+    pub fn effective_label_lang(&self, lang: OutputLanguage) -> String {
         if let Some(l) = &self.label {
             if !l.trim().is_empty() { return l.clone(); }
         }
-        match self.kind {
-            crate::model::FooterBandKind::GrandTotal => "Grand Total".to_string(),
-            crate::model::FooterBandKind::Notes => "Notes".to_string(),
-            crate::model::FooterBandKind::Average => "Average".to_string(),
-            crate::model::FooterBandKind::Count => "Count".to_string(),
-            crate::model::FooterBandKind::Subtotal => "Subtotal".to_string(),
-            crate::model::FooterBandKind::Custom => "Custom".to_string(),
+        use crate::model::FooterBandKind::*;
+        match (self.kind, lang) {
+            (GrandTotal, OutputLanguage::En) => "Grand Total".to_string(),
+            (GrandTotal, OutputLanguage::Id) => "Total Keseluruhan".to_string(),
+            (GrandTotal, OutputLanguage::IdEn) => "Grand Total (Total Keseluruhan)".to_string(),
+            (Notes, OutputLanguage::En) => "Notes".to_string(),
+            (Notes, OutputLanguage::Id) => "Catatan".to_string(),
+            (Notes, OutputLanguage::IdEn) => "Notes (Catatan)".to_string(),
+            (Average, OutputLanguage::En) => "Average".to_string(),
+            (Average, OutputLanguage::Id) => "Rata-rata".to_string(),
+            (Average, OutputLanguage::IdEn) => "Average (Rata-rata)".to_string(),
+            (Count, OutputLanguage::En) => "Count".to_string(),
+            (Count, OutputLanguage::Id) => "Jumlah".to_string(),
+            (Count, OutputLanguage::IdEn) => "Count (Jumlah)".to_string(),
+            (Subtotal, OutputLanguage::En) => "Subtotal".to_string(),
+            (Subtotal, OutputLanguage::Id) => "Subtotal".to_string(),
+            (Subtotal, OutputLanguage::IdEn) => "Subtotal".to_string(),
+            (Custom, OutputLanguage::En) => "Custom".to_string(),
+            (Custom, OutputLanguage::Id) => "Kustom".to_string(),
+            (Custom, OutputLanguage::IdEn) => "Custom (Kustom)".to_string(),
         }
     }
 }
@@ -144,6 +183,9 @@ pub struct PivotSpec {
     /// Grand Total when `subtotals.grand_total` is true, plus Notes.
     #[serde(default)]
     pub footer_bands: Vec<FooterBandSpec>,
+    /// Language for auto-generated pivot output labels (title, subtotals, footer bands, notes).
+    #[serde(default = "default_output_language")]
+    pub output_language: OutputLanguage,
 }
 
 impl PivotSpec {

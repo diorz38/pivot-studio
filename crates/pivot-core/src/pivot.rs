@@ -183,6 +183,8 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     } else {
         value_fields.iter().map(|(_, vf)| vf.effective_name()).collect()
     };
+    let total_cols = row_header_cols + col_key_vec.len() * value_count.max(1);
+    let lang = spec.output_language;
 
     let mut header_rows: Vec<Vec<Cell>> = Vec::new();
     if spec.columns.is_empty() {
@@ -297,7 +299,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 for level in (cl..row_header_cols.saturating_sub(1)).rev() {
                     if level >= prev_keys.len() { continue; }
                     let prefix = prev_keys[..=level].to_vec();
-                    let label = format!("{} Subtotal", prev_keys[level]);
+                    let label = subtotal_label(&prev_keys[level], lang);
                     let mut row = Vec::new();
                     for i in 0..row_header_cols {
                         if i == 0 { row.push(Cell::new(label.clone(), CellRole::Subtotal).indented(level)); }
@@ -352,7 +354,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         for level in (0..row_header_cols.saturating_sub(1)).rev() {
             if level >= prev_keys.len() { continue; }
             let prefix = prev_keys[..=level].to_vec();
-            let label = format!("{} Subtotal", prev_keys[level]);
+            let label = subtotal_label(&prev_keys[level], lang);
             let mut row = Vec::new();
             for i in 0..row_header_cols {
                 if i == 0 { row.push(Cell::new(label.clone(), CellRole::Subtotal).indented(level)); }
@@ -386,13 +388,13 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 let mut frow = Vec::new();
                 let src = table.source.clone().unwrap_or_else(|| "(in-memory)".to_string());
                 let filter_summary = if spec.filters.is_empty() {
-                    "none".to_string()
+                    String::new()
                 } else {
                     spec.filters.iter().map(|f| format!("{}:{:?}", f.field.name, f.op)).collect::<Vec<_>>().join(", ")
                 };
-                let note = format!("Source: {} | Rows: {} | Filters: {}", src, table.row_count(), filter_summary);
-                frow.push(Cell::new(note, CellRole::Footer));
-                footer_bands.push(FooterBand { kind: FooterBandKind::Notes, label: band_spec.effective_label(), cells: frow, pinned: false });
+                let note = notes_text(lang, &src, table.row_count(), &filter_summary);
+                frow.push(Cell::span(note, CellRole::Footer, total_cols, 1));
+                footer_bands.push(FooterBand { kind: FooterBandKind::Notes, label: band_spec.effective_label_lang(lang), cells: frow, pinned: false });
             }
             FooterBandKind::GrandTotal | FooterBandKind::Average | FooterBandKind::Count | FooterBandKind::Custom | FooterBandKind::Subtotal => {
                 if value_fields.is_empty() { continue; }
@@ -408,7 +410,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                     FooterBandKind::GrandTotal => CellRole::GrandTotal,
                     _ => CellRole::Footer,
                 };
-                frow.push(Cell::new(band_spec.effective_label(), role.clone()));
+                frow.push(Cell::new(band_spec.effective_label_lang(lang), role.clone()));
                 for _ in 1..row_header_cols { frow.push(Cell::new("", role.clone())); }
                 if spec.columns.is_empty() {
                     for (vi, (ci, vf)) in value_fields.iter().enumerate() {
@@ -466,7 +468,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                         }
                     }
                 }
-                footer_bands.push(FooterBand { kind: band_spec.kind, label: band_spec.effective_label(), cells: frow, pinned: false });
+                footer_bands.push(FooterBand { kind: band_spec.kind, label: band_spec.effective_label_lang(lang), cells: frow, pinned: false });
             }
         }
     }
@@ -489,33 +491,57 @@ fn humanize_name(name: &str) -> String {
     name.replace('_', " ").trim().to_string()
 }
 
-fn join_natural(items: &[String]) -> String {
+fn join_lang(lang: crate::spec::OutputLanguage, items: &[String]) -> String {
+    use crate::spec::OutputLanguage::*;
+    let and = match lang { Id => " dan ", _ => " and " };
     match items.len() {
         0 => String::new(),
         1 => items[0].clone(),
+        2 => format!("{}{}{}", items[0], and, items[1]),
         _ => {
-            let (head, tail) = items.split_at(items.len() - 1);
-            format!("{} and {}", head.join(", "), tail[0])
+            let (last, rest) = items.split_last().unwrap();
+            format!("{}, {}{}", rest.join(", "), and.trim_start(), last)
         }
     }
 }
 
-fn value_phrase(v: &ValueField) -> String {
+fn bi(lang: crate::spec::OutputLanguage, en: &str, id: &str) -> String {
+    use crate::spec::OutputLanguage::*;
+    match lang {
+        En => en.to_string(),
+        Id => id.to_string(),
+        IdEn => format!("{en} / {id}"),
+    }
+}
+
+fn value_phrase(v: &ValueField, lang: crate::spec::OutputLanguage) -> String {
+    use crate::spec::OutputLanguage::*;
     let field = humanize_name(&v.field.name);
-    match v.aggregate {
-        Aggregate::Count | Aggregate::CountDistinct => format!("Number of {field}"),
-        Aggregate::Sum => format!("Sum of {field}"),
-        Aggregate::Average => format!("Average of {field}"),
-        Aggregate::Min => format!("Minimum of {field}"),
-        Aggregate::Max => format!("Maximum of {field}"),
+    match (v.aggregate, lang) {
+        (Aggregate::Count | Aggregate::CountDistinct, En) => format!("Number of {field}"),
+        (Aggregate::Count | Aggregate::CountDistinct, Id) => format!("Jumlah {field}"),
+        (Aggregate::Count | Aggregate::CountDistinct, IdEn) => format!("Number of {field} / Jumlah {field}"),
+        (Aggregate::Sum, En) => format!("Sum of {field}"),
+        (Aggregate::Sum, Id) => format!("Total {field}"),
+        (Aggregate::Sum, IdEn) => format!("Sum of {field} / Total {field}"),
+        (Aggregate::Average, En) => format!("Average of {field}"),
+        (Aggregate::Average, Id) => format!("Rata-rata {field}"),
+        (Aggregate::Average, IdEn) => format!("Average of {field} / Rata-rata {field}"),
+        (Aggregate::Min, En) => format!("Minimum of {field}"),
+        (Aggregate::Min, Id) => format!("Minimum {field}"),
+        (Aggregate::Min, IdEn) => format!("Minimum of {field} / Minimum {field}"),
+        (Aggregate::Max, En) => format!("Maximum of {field}"),
+        (Aggregate::Max, Id) => format!("Maksimum {field}"),
+        (Aggregate::Max, IdEn) => format!("Maximum of {field} / Maksimum {field}"),
     }
 }
 
 fn auto_title(spec: &PivotSpec) -> String {
+    let lang = spec.output_language;
     let vals = if spec.values.is_empty() {
-        "Values".to_string()
+        bi(lang, "Values", "Nilai")
     } else {
-        join_natural(&spec.values.iter().map(value_phrase).collect::<Vec<_>>())
+        join_lang(lang, &spec.values.iter().map(|v| value_phrase(v, lang)).collect::<Vec<_>>())
     };
     let cols = spec
         .columns
@@ -530,16 +556,49 @@ fn auto_title(spec: &PivotSpec) -> String {
 
     let mut out = vals;
     if !cols.is_empty() {
-        out.push_str(" according to ");
-        out.push_str(&join_natural(&cols));
+        out.push_str(&match lang {
+            crate::spec::OutputLanguage::En => " according to ".to_string(),
+            crate::spec::OutputLanguage::Id => " berdasarkan ".to_string(),
+            crate::spec::OutputLanguage::IdEn => " according to / berdasarkan ".to_string(),
+        });
+        out.push_str(&join_lang(lang, &cols));
     }
     if !rows.is_empty() {
-        out.push_str(" menurut ");
-        out.push_str(&join_natural(&rows));
+        // m01681: "menurut" -> "by" (EN); keep "menurut" for ID; bilingual shows both.
+        out.push_str(&match lang {
+            crate::spec::OutputLanguage::En => " by ".to_string(),
+            crate::spec::OutputLanguage::Id => " menurut ".to_string(),
+            crate::spec::OutputLanguage::IdEn => " by / menurut ".to_string(),
+        });
+        out.push_str(&join_lang(lang, &rows));
     } else if cols.is_empty() {
-        out.push_str(" (all data)");
+        out.push_str(&match lang {
+            crate::spec::OutputLanguage::En => " (all data)".to_string(),
+            crate::spec::OutputLanguage::Id => " (semua data)".to_string(),
+            crate::spec::OutputLanguage::IdEn => " (all data / semua data)".to_string(),
+        });
     }
     out
+}
+
+fn subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage) -> String {
+    use crate::spec::OutputLanguage::*;
+    match lang {
+        En => format!("{prefix} Subtotal"),
+        Id => format!("Subtotal {prefix}"),
+        IdEn => format!("{prefix} Subtotal"),
+    }
+}
+
+fn notes_text(lang: crate::spec::OutputLanguage, source: &str, rows: usize, filter_summary: &str) -> String {
+    use crate::spec::OutputLanguage::*;
+    let none = match lang { En => "none", Id => "tidak ada", IdEn => "none / tidak ada" };
+    let filters = if filter_summary.trim().is_empty() { none } else { filter_summary };
+    match lang {
+        En => format!("Source: {source} | Rows: {rows} | Filters: {filters}"),
+        Id => format!("Sumber: {source} | Baris: {rows} | Filter: {filters}"),
+        IdEn => format!("Source / Sumber: {source} | Rows / Baris: {rows} | Filters / Filter: {filters}"),
+    }
 }
 
 #[cfg(test)]
@@ -807,6 +866,7 @@ mod tests {
                 crate::spec::FooterBandSpec::average(),
                 crate::spec::FooterBandSpec::notes(),
             ],
+            output_language: crate::spec::OutputLanguage::En,
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -834,6 +894,7 @@ mod tests {
                 crate::spec::FooterBandSpec::notes(),
                 crate::spec::FooterBandSpec::grand_total(),
             ],
+            output_language: crate::spec::OutputLanguage::En,
             ..Default::default()
         };
         let m = compute(&t, &spec);
