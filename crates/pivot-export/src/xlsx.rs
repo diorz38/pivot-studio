@@ -1,4 +1,4 @@
-﻿use crate::{ExportError, ExportStyle, Result};
+use crate::{ExportError, ExportStyle, Result};
 use pivot_core::{Cell, CellRole, FooterBandKind, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet};
@@ -35,10 +35,14 @@ pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Resul
     ws.set_row_height(row, 22.0).ok();
     row += 1;
 
-    // Header rows
-    for hrow in &model.header_rows {
-        write_row(ws, row, hrow, &ts, false, 20.0)?;
-        row += 1;
+    // Header rows (respect rowspan occupancy from multi-level column pivots)
+    {
+        let total_cols = cols as usize;
+        let mut occupied = vec![vec![false; total_cols]; model.header_rows.len()];
+        for (ri, hrow) in model.header_rows.iter().enumerate() {
+            write_row_with_occupancy(ws, row, hrow, &ts, false, 20.0, ri, &mut occupied, total_cols)?;
+            row += 1;
+        }
     }
 
     // Body rows
@@ -166,4 +170,58 @@ mod tests {
         let meta = std::fs::metadata(&path).unwrap();
         assert!(meta.len() > 1000, "xlsx too small: {}", meta.len());
     }
+}
+
+fn write_row_with_occupancy(
+    ws: &mut Worksheet,
+    row: u32,
+    cells: &[Cell],
+    ts: &TableStyle,
+    zebra: bool,
+    height: f64,
+    row_idx: usize,
+    occupied: &mut [Vec<bool>],
+    total_cols: usize,
+) -> Result<()> {
+    ws.set_row_height(row, height).ok();
+    let mut col: u16 = 0;
+    for cell in cells {
+        while (col as usize) < total_cols && occupied.get(row_idx).and_then(|r| r.get(col as usize)).copied().unwrap_or(false) {
+            col += 1;
+        }
+        let rs = cell_role_style(cell.role, ts, zebra);
+        let align = if is_value_role(cell.role) && looks_numeric(&cell.text) { FormatAlign::Right } else { FormatAlign::Left };
+        let mut fmt = make_format(&rs, align, rs.strong);
+        if cell.indent > 0 { fmt = fmt.set_indent(cell.indent.min(8) as u8); }
+        let cspan = cell.colspan.max(1) as u16;
+        let rspan = cell.rowspan.max(1) as u32;
+        // mark occupancy for rowspan
+        for dr in 0..(rspan as usize) {
+            let rr = row_idx + dr;
+            if rr >= occupied.len() { continue; }
+            for dc in 0..(cspan as usize) {
+                let cc = (col as usize) + dc;
+                if cc < total_cols { occupied[rr][cc] = true; }
+            }
+        }
+        if cspan > 1 || rspan > 1 {
+            let end_col = col + cspan - 1;
+            let end_row = row + rspan - 1;
+            if rspan == 1 && cspan > 1 && col > 0 && cell.text.is_empty() {
+                ws.merge_range(row, col, end_row, end_col, "", &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            } else if looks_numeric(&cell.text) && is_value_role(cell.role) && rspan == 1 && cspan == 1 {
+                ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            } else {
+                ws.merge_range(row, col, end_row, end_col, &cell.text, &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            }
+        } else if looks_numeric(&cell.text) && is_value_role(cell.role) {
+            ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+        } else {
+            ws.write_string_with_format(row, col, &cell.text, &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+        }
+        col += cspan;
+    }
+    // fill any remaining occupied-origin gaps? cells are dense; no-op
+    let _ = (zebra, row_idx);
+    Ok(())
 }

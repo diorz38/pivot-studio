@@ -115,10 +115,11 @@ fn draw_title(state: &mut PageState, title: &str, ts: &TableStyle) -> Result<()>
 }
 
 fn draw_header_rows(state: &mut PageState, model: &ThemedTableModel, col_w: &[f64], ts: &TableStyle) -> Result<()> {
-    // Render each header row honoring colspan; rowspan is rare in current model but
-    // we respect it by painting at full row height (header rows are repeated per page).
-    for row in &model.header_rows {
-        draw_model_row(state, row, col_w, ts, true)?;
+    let total_cols = col_w.len();
+    let rows_n = model.header_rows.len();
+    let mut occupied = vec![vec![false; total_cols]; rows_n];
+    for (ri, row) in model.header_rows.iter().enumerate() {
+        draw_model_row_occupancy(state, row, col_w, ts, true, ri, &mut occupied, total_cols)?;
     }
     Ok(())
 }
@@ -192,4 +193,51 @@ fn truncate_to_width(s: &str, width_mm: f64) -> String {
     let max_chars = ((width_mm / (FONT_SIZE * 0.3528 * 0.55)).floor() as usize).max(1);
     let t = sanitize(s);
     if t.chars().count() <= max_chars { t } else { t.chars().take(max_chars.saturating_sub(1)).collect::<String>() + "~" }
+}
+
+fn draw_model_row_occupancy(
+    state: &mut PageState,
+    cells: &[Cell],
+    col_w: &[f64],
+    ts: &TableStyle,
+    is_header: bool,
+    row_idx: usize,
+    occupied: &mut [Vec<bool>],
+    total_cols: usize,
+) -> Result<()> {
+    let rh = row_h();
+    let layer = state.layer();
+    let mut ci = 0usize;
+    let y_top = state.y;
+    for cell in cells {
+        while ci < total_cols && occupied.get(row_idx).and_then(|r| r.get(ci)).copied().unwrap_or(false) {
+            ci += 1;
+        }
+        let cspan = cell.colspan.max(1);
+        let rspan = cell.rowspan.max(1);
+        for dr in 0..rspan {
+            let rr = row_idx + dr;
+            if rr >= occupied.len() { continue; }
+            for dc in 0..cspan {
+                let cc = ci + dc;
+                if cc < total_cols { occupied[rr][cc] = true; }
+            }
+        }
+        let w: f64 = col_w.iter().skip(ci).take(cspan).sum();
+        let x = MARGIN + col_w.iter().take(ci).sum::<f64>();
+        let h = rh * rspan as f64;
+        let rs = cell_role_style(cell.role, ts, false);
+        set_fill_color(&layer, rs.fill);
+        layer.add_rect(Rect::new(mm(x), mm(y_top - h), mm(x + w), mm(y_top)).with_mode(PaintMode::Fill));
+        set_stroke_color(&layer, rs.grid_line);
+        layer.add_rect(Rect::new(mm(x), mm(y_top - h), mm(x + w), mm(y_top)).with_mode(PaintMode::Stroke));
+        set_fill_color(&layer, rs.text);
+        let font = if rs.strong || is_header { &state.font_bold } else { &state.font };
+        let tx = x + CELL_PAD_X + (cell.indent as f64) * 2.5;
+        let text = truncate_to_width(&cell.text, w - CELL_PAD_X * 2.0);
+        layer.use_text(sanitize(&text), FONT_SIZE as f32, mm(tx), mm(y_top - rh + CELL_PAD_Y + 0.8), font);
+        ci += cspan;
+    }
+    state.y -= rh;
+    Ok(())
 }

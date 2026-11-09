@@ -84,6 +84,11 @@ fn numeric(v: &Value) -> Option<f64> {
         Value::Integer(n) => Some(*n as f64),
         Value::Decimal(n) if n.is_finite() => Some(*n),
         Value::Boolean(b) => Some(if *b { 1.0 } else { 0.0 }),
+        Value::String(s) => {
+            let t = s.trim().replace(',', "");
+            if t.is_empty() { return None; }
+            t.parse::<f64>().ok().filter(|n| n.is_finite())
+        }
         _ => None,
     }
 }
