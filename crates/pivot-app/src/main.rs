@@ -2,6 +2,8 @@
 
 mod app;
 mod chrome;
+#[macro_use]
+mod devlog;
 mod dock;
 mod menus;
 mod pivot_grid;
@@ -9,6 +11,7 @@ mod pivot_grid;
 use app::PivotApp;
 
 fn main() -> eframe::Result<()> {
+    eprintln!("[pivot-dev] starting Pivot Studio (debug build instrumentation active; set PIVOT_DEVLOG=0 to silence in debug builds)");
     let viewport = egui::ViewportBuilder::default()
         .with_title("Pivot Studio")
         .with_inner_size([1280.0, 800.0])

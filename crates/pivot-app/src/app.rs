@@ -327,6 +327,7 @@ impl PivotApp {
         if let Some(res) = finished {
             let preserve = self.loading.as_ref().map(|l| l.preserve_workspace).unwrap_or(false);
             self.loading = None;
+            crate::devlog!("poll_loading: done preserve={} before_sheets=[{}]", preserve, self.debug_sheet_summary());
             match res {
                 Ok(loaded) => {
                     self.source_name = Some(loaded.name);
@@ -334,6 +335,7 @@ impl PivotApp {
                     self.loaded_file_kind = Some(loaded.kind);
                     if !preserve || self.selected_columns.is_none() {
                         self.selected_columns = Some(loaded.table.columns.iter().map(|c| c.name.clone()).collect());
+                        crate::devlog!("poll_loading: selected_columns reset to all ({})", self.selected_columns.as_ref().map(|s| s.len()).unwrap_or(0));
                     } else if let (Some(sel), Some(table)) = (&mut self.selected_columns, Some(&loaded.table)) {
                         // Keep saved selection, but drop columns that no longer exist in the source.
                         let valid: std::collections::BTreeSet<String> = table.columns.iter().map(|c| c.name.clone()).collect();
@@ -341,12 +343,14 @@ impl PivotApp {
                         if sel.is_empty() {
                             *sel = valid;
                         }
+                        crate::devlog!("poll_loading: preserved selected_columns count={}", sel.len());
                     }
                     self.table = Some(loaded.table);
                     self.db_source = None;
                     for ws in &mut self.worksheets { ws.model = None; }
                     self.on_home = false;
                     self.on_source_page = !preserve;
+                    crate::devlog!("poll_loading: after preserve={} on_source_page={} sheets=[{}]", preserve, self.on_source_page, self.debug_sheet_summary());
                     self.status = if preserve {
                         format!("Workspace source loaded ({} rows, {} cols).", self.row_count(), self.col_count())
                     } else {
@@ -354,7 +358,7 @@ impl PivotApp {
                             self.source_name.as_deref().unwrap_or("data"), self.row_count(), self.col_count())
                     };
                 }
-                Err(e) => { self.status = format!("Load failed: {e}"); }
+                Err(e) => { crate::devlog!("poll_loading: failed preserve={} err={e}", preserve); self.status = format!("Load failed: {e}"); }
             }
             ctx.request_repaint();
         }
@@ -369,18 +373,27 @@ impl PivotApp {
             self.pivot_computing = None;
             match result {
                 Ok(mut model) => {
+                    crate::devlog!("poll_pivot: done sheet_id={} ok body_rows={}", sheet_id, model.body_rows.len());
                     let msg = format!(
                         "Pivot updated: {} body row(s), {} footer band(s).",
                         model.body_rows.len(),
                         model.footer_bands.len()
                     );
+                    let mut applied_name = None;
                     if let Some(ws) = self.worksheets.iter_mut().find(|w| w.id == sheet_id) {
                         model.title = format!("{} {}", ws.table_title_prefix(), model.title);
+                        applied_name = Some(ws.name.clone());
                         ws.model = Some(model);
+                    }
+                    if let Some(name) = applied_name {
+                        crate::devlog!("poll_pivot: applied sheet='{}' sheets=[{}]", name, self.debug_sheet_summary());
+                    } else {
+                        crate::devlog!("poll_pivot: sheet_id={} not found (closed?)", sheet_id);
                     }
                     self.status = msg;
                 }
                 Err(e) => {
+                    crate::devlog!("poll_pivot: failed sheet_id={} err={e}", sheet_id);
                     self.status = format!("Pivot compute failed: {e}");
                 }
             }
@@ -397,6 +410,7 @@ impl PivotApp {
     }
 
     fn start_load_inner(&mut self, path: PathBuf, kind: FileKind, preserve_workspace: bool) {
+        crate::devlog!("start_load: path={} kind={:?} preserve_workspace={} current_sheets=[{}]", path.display(), kind, preserve_workspace, self.debug_sheet_summary());
         if self.loading.is_some() { self.status = "A load is already in progress.".to_string(); return; }
         let (tx, rx) = mpsc::channel::<LoadMsg>();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -544,6 +558,8 @@ impl PivotApp {
     pub fn request_pivot_recompute(&mut self) {
         let sheet_id = self.active_sheet().id.clone();
         let spec = self.active_spec().clone();
+        crate::devlog!("request_pivot_recompute: active={} sheet_id={} r{}c{}v{}f{} sheets=[{}]",
+            self.active_worksheet, sheet_id, spec.rows.len(), spec.columns.len(), spec.values.len(), spec.filters.len(), self.debug_sheet_summary());
         if self.table.is_none() && self.db_source.is_none() {
             self.status = "Load data before computing a pivot.".to_string(); return;
         }
@@ -552,6 +568,7 @@ impl PivotApp {
         }
         let stale = self.stale_spec_refs(&spec);
         if !stale.is_empty() {
+            crate::devlog!("request_pivot_recompute: blocked stale_refs={:?}", stale);
             self.status = format!("Cannot compute: pivot references unavailable/unselected columns: {}. Re-enable them in Source Data or update the layout.", stale.join(", "));
             return;
         }
@@ -607,6 +624,7 @@ impl PivotApp {
     }
 
     pub fn add_worksheet(&mut self) {
+        let before = self.debug_sheet_summary();
         let n = self.next_sheet_no;
         self.next_sheet_no += 1;
         let name = WorksheetState::default_name(n);
@@ -616,11 +634,19 @@ impl PivotApp {
         self.on_home = false;
         self.on_source_page = false;
         self.sync_layout_pickers();
+        crate::devlog!("add_worksheet: before=[{}] after=[{}] active={}", before, self.debug_sheet_summary(), self.active_worksheet);
         self.status = format!("Added worksheet '{name}'.");
+    }
+
+    pub fn debug_sheet_summary(&self) -> String {
+        self.worksheets.iter().enumerate().map(|(i,w)| {
+            format!("{}:{}#{} r{}c{}v{}f{}", i, w.name, w.number, w.spec.rows.len(), w.spec.columns.len(), w.spec.values.len(), w.spec.filters.len())
+        }).collect::<Vec<_>>().join(" | ")
     }
 
     pub fn select_worksheet(&mut self, idx: usize) {
         if idx < self.worksheets.len() {
+            crate::devlog!("select_worksheet: from={} to={} sheets=[{}]", self.active_worksheet, idx, self.debug_sheet_summary());
             self.active_worksheet = idx;
             self.on_home = false;
             self.on_source_page = false;
@@ -630,6 +656,7 @@ impl PivotApp {
 
     pub fn close_worksheet(&mut self, idx: usize) {
         if self.worksheets.len() <= 1 || idx >= self.worksheets.len() { return; }
+        crate::devlog!("close_worksheet: idx={} before=[{}]", idx, self.debug_sheet_summary());
         let name = self.worksheets[idx].name.clone();
         let was_active = self.active_worksheet == idx;
         self.worksheets.remove(idx);
@@ -641,6 +668,7 @@ impl PivotApp {
             self.active_worksheet = idx.min(self.worksheets.len().saturating_sub(1));
         }
         self.sync_layout_pickers();
+        crate::devlog!("close_worksheet: after=[{}] active={}", self.debug_sheet_summary(), self.active_worksheet);
         self.status = format!("Closed worksheet '{name}'.");
     }
 
@@ -701,6 +729,7 @@ impl PivotApp {
     }
     pub fn clear_layout(&mut self) {
         let i = self.active_worksheet.min(self.worksheets.len().saturating_sub(1));
+        crate::devlog!("clear_layout: sheet={} [{}]", i, self.debug_sheet_summary());
         if let Some(ws) = self.worksheets.get_mut(i) {
             ws.spec.rows.clear();
             ws.spec.columns.clear();
@@ -844,6 +873,9 @@ impl PivotApp {
         let ws = self.build_workspace_file();
         let sheets = ws.worksheets.len();
         let configured = ws.worksheets.iter().filter(|w| !w.spec.rows.is_empty() || !w.spec.columns.is_empty() || !w.spec.values.is_empty() || !w.spec.filters.is_empty() || w.spec.title_override.is_some() || w.spec.stub_head.is_some()).count();
+        crate::devlog!("save_workspace: path={} sheets={} configured={} active={} summary=[{}] selected_columns={:?}",
+            path.display(), sheets, configured, ws.active_worksheet, self.debug_sheet_summary(),
+            ws.selected_columns.as_ref().map(|v| v.len()));
         match workspace::save_workspace(&path, &ws) {
             Ok(()) => { self.workspace_path = Some(path.clone()); self.status = format!("Workspace saved: {} ({} sheet(s), {} configured).", path.display(), sheets, configured); }
             Err(e) => self.status = format!("Save workspace failed: {e}"),
@@ -854,9 +886,13 @@ impl PivotApp {
         let path = match rfd::FileDialog::new().set_title("Open Pivot Studio Workspace").add_filter("Pivot Workspace", &["pivot"]).pick_file() {
             Some(p) => p, None => { self.status = "Open workspace cancelled.".to_string(); return; }
         };
+        crate::devlog!("open_workspace: path={} before=[{}]", path.display(), self.debug_sheet_summary());
         let ws = match workspace::load_workspace(&path) {
-            Ok(w) => w, Err(e) => { self.status = format!("Open workspace failed: {e}"); return; }
+            Ok(w) => w, Err(e) => { crate::devlog!("open_workspace: load failed: {e}"); self.status = format!("Open workspace failed: {e}"); return; }
         };
+        crate::devlog!("open_workspace: loaded worksheets={} active={} selected_columns={:?} source={:?}",
+            ws.worksheets.len(), ws.active_worksheet, ws.selected_columns.as_ref().map(|v| v.len()),
+            match &ws.source { WorkspaceSource::None=>"None", WorkspaceSource::File{..}=>"File", WorkspaceSource::Sqlite{..}=>"Sqlite", WorkspaceSource::MySql{..}=>"MySql" });
         if let Some(load) = &self.loading { load.cancel.store(true, Ordering::Relaxed); }
         self.loading = None;
         if let Some(state) = &self.pivot_computing { state.cancel.store(true, Ordering::Relaxed); }
@@ -880,6 +916,7 @@ impl PivotApp {
         self.table = None; self.source_name = None; self.loaded_file_path = None; self.loaded_file_kind = None;
         self.db_source = None;
         self.sync_layout_pickers();
+        crate::devlog!("open_workspace: restored sheets=[{}] active={}", self.debug_sheet_summary(), self.active_worksheet);
         match ws.source {
             WorkspaceSource::None => {
                 self.on_home = ws.view.on_home && self.worksheets.iter().all(|w| w.spec.rows.is_empty() && w.spec.columns.is_empty() && w.spec.values.is_empty() && w.spec.filters.is_empty());
