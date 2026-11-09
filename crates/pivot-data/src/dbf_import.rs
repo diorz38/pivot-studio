@@ -11,13 +11,13 @@ pub fn load_dbf(path: &Path) -> Result<DataTable> {
     let mut dbf = dbase::Reader::new(reader).map_err(|e| DataError::Dbf(e.to_string()))?;
     let fields = dbf.fields().to_vec();
 
+    let headers: Vec<String> = fields.iter().map(|f| f.name().to_string()).collect();
+    let normalized = crate::normalize::normalize_headers(&headers);
     let columns: Vec<Column> = fields
         .iter()
-        .map(|f| Column {
-            name: f.name().to_string(),
-            inferred: map_field_type(f.field_type()),
-            override_type: None,
-            nullable: true,
+        .zip(normalized)
+        .map(|(f, (name, original_name))| {
+            Column::with_metadata(name, original_name, map_field_type(f.field_type()), true)
         })
         .collect();
 

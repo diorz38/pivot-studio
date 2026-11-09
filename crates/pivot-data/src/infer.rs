@@ -1,7 +1,7 @@
 use pivot_core::{Column, DataType, Value};
 
-pub fn infer_columns(headers: &[String], rows: &[Vec<String>]) -> Vec<Column> {
-    let col_count = headers.len();
+/// Infer per-column types/nullability without assigning names.
+pub fn infer_column_types(col_count: usize, rows: &[Vec<String>]) -> Vec<(DataType, bool)> {
     let mut inferred = vec![DataType::String; col_count];
     let mut nullable = vec![false; col_count];
     let mut decided = vec![false; col_count];
@@ -22,19 +22,29 @@ pub fn infer_columns(headers: &[String], rows: &[Vec<String>]) -> Vec<Column> {
             }
         }
     }
+    inferred.into_iter().zip(nullable).collect()
+}
 
+/// Infer columns using header text as the column name (no identifier normalization).
+/// File-dataset loaders that need SQLite-compatible identifiers should use
+/// `crate::normalize::infer_file_columns` instead.
+pub fn infer_columns(headers: &[String], rows: &[Vec<String>]) -> Vec<Column> {
+    let types = infer_column_types(headers.len(), rows);
     headers
         .iter()
         .enumerate()
-        .map(|(i, name)| Column {
+        .zip(types)
+        .map(|((i, name), (inferred, nullable))| Column {
             name: if name.trim().is_empty() {
                 format!("Column{}", i + 1)
             } else {
                 name.clone()
             },
-            inferred: inferred[i],
+            original_name: None,
+            display_name: None,
+            inferred,
             override_type: None,
-            nullable: nullable[i],
+            nullable,
         })
         .collect()
 }

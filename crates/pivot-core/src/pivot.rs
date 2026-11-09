@@ -187,9 +187,36 @@ fn cell_text(table: &DataTable, row: usize, col: usize) -> String {
     table.get(row, col).map(|v| v.as_display()).unwrap_or_default()
 }
 
-fn passes_filters(table: &DataTable, row: usize, filters: &[Filter], idx: &BTreeMap<String, usize>) -> bool {
+pub fn resolve_field_index(table: &DataTable, name: &str) -> Option<usize> {
+    let k = name.trim();
+    if k.is_empty() { return None; }
+    table.columns.iter().position(|c| c.name == k)
+        .or_else(|| table.columns.iter().position(|c| c.name.eq_ignore_ascii_case(k)))
+        .or_else(|| table.columns.iter().position(|c| c.original_name.as_deref() == Some(k)))
+        .or_else(|| table.columns.iter().position(|c| c.display_name.as_deref() == Some(k)))
+        .or_else(|| {
+            // Accept qualified refs (alias.col) and legacy unqualified refs against qualified columns.
+            table.columns.iter().position(|c| {
+                c.name.ends_with(&format!(".{k}")) || k.ends_with(&format!(".{}", c.name))
+                    || c.original_name.as_deref().is_some_and(|o| format!(".{o}") == format!(".{k}") || c.name.ends_with(&format!(".{o}")) && o.eq_ignore_ascii_case(k.rsplit('.').next().unwrap_or(k)))
+            })
+        })
+        .or_else(|| {
+            let tail = k.rsplit('.').next().unwrap_or(k);
+            table.columns.iter().position(|c| c.name == tail || c.name.ends_with(&format!(".{tail}")) || c.name.eq_ignore_ascii_case(tail))
+        })
+}
+
+/// Canonical resolved column name for a (possibly legacy/qualified/original/display)
+/// field reference. `None` when the reference cannot be resolved against the table.
+/// Used to migrate persisted specs onto stable `alias.column` identity.
+pub fn canonical_field_name(table: &DataTable, name: &str) -> Option<String> {
+    resolve_field_index(table, name).map(|i| table.columns[i].name.clone())
+}
+
+fn passes_filters(table: &DataTable, row: usize, filters: &[Filter]) -> bool {
     for f in filters {
-        let Some(&ci) = idx.get(&f.field.name) else { continue; };
+        let Some(ci) = resolve_field_index(table, &f.field.name) else { continue; };
         let v = table.get(row, ci).cloned().unwrap_or(Value::Null);
         let in_set = f.values.iter().any(|x| x == &v || x.as_display() == v.as_display());
         let ok = match f.op {
@@ -207,19 +234,12 @@ fn passes_filters(table: &DataTable, row: usize, filters: &[Filter], idx: &BTree
 
 /// Compute a pivot and produce a canonical `ThemedTableModel` (AC2.x/AC3 foundations).
 pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
-    let idx: BTreeMap<String, usize> = table
-        .columns
-        .iter()
-        .enumerate()
-        .map(|(i, c)| (c.name.clone(), i))
-        .collect();
-
-    let row_fields: Vec<usize> = spec.rows.iter().filter_map(|f| idx.get(&f.name).copied()).collect();
-    let col_fields: Vec<usize> = spec.columns.iter().filter_map(|f| idx.get(&f.name).copied()).collect();
+    let row_fields: Vec<usize> = spec.rows.iter().filter_map(|f| resolve_field_index(table, &f.name)).collect();
+    let col_fields: Vec<usize> = spec.columns.iter().filter_map(|f| resolve_field_index(table, &f.name)).collect();
     let value_fields: Vec<(usize, &ValueField)> = spec
         .values
         .iter()
-        .filter_map(|vf| idx.get(&vf.field.name).copied().map(|i| (i, vf)))
+        .filter_map(|vf| resolve_field_index(table, &vf.field.name).map(|i| (i, vf)))
         .collect();
 
     let mut col_keys: BTreeSet<Key> = BTreeSet::new();
@@ -229,7 +249,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let mut filtered_rows: usize = 0;
 
     for r in 0..table.row_count() {
-        if !passes_filters(table, r, &spec.filters, &idx) {
+        if !passes_filters(table, r, &spec.filters) {
             continue;
         }
         filtered_rows += 1;
@@ -370,7 +390,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let mut prefix_col_subs: BTreeMap<(Vec<String>, Key, usize), Accum> = BTreeMap::new();
     if spec.subtotals.row_subtotals && !spec.columns.is_empty() && row_header_cols > 1 {
         for r in 0..table.row_count() {
-            if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+            if !passes_filters(table, r, &spec.filters) { continue; }
             let rk_vals: Vec<String> = if row_fields.is_empty() { vec!["(All)".to_string()] } else { row_fields.iter().map(|&ci| cell_text(table, r, ci)).collect() };
             let ck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&ci| cell_text(table, r, ci)).collect() });
             for level in 0..row_header_cols.saturating_sub(1) {
@@ -388,7 +408,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let mut prefix_subs: BTreeMap<Vec<String>, Vec<Accum>> = BTreeMap::new();
     if spec.subtotals.row_subtotals && row_header_cols > 1 {
         for r in 0..table.row_count() {
-            if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+            if !passes_filters(table, r, &spec.filters) { continue; }
             let rk_vals: Vec<String> = if row_fields.is_empty() { vec!["(All)".to_string()] } else { row_fields.iter().map(|&ci| cell_text(table, r, ci)).collect() };
             for level in 0..row_header_cols.saturating_sub(1) {
                 if level >= rk_vals.len() { continue; }
@@ -622,7 +642,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                             let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                             let mut acc = Accum::default();
                             for r in 0..table.row_count() {
-                                if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+                                if !passes_filters(table, r, &spec.filters) { continue; }
                                 let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
                                 acc.push(&v, a);
                             }
@@ -664,7 +684,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                                 let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                                 let mut acc = Accum::default();
                                 for r in 0..table.row_count() {
-                                    if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+                                    if !passes_filters(table, r, &spec.filters) { continue; }
                                     let rck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&cci| cell_text(table, r, cci)).collect() });
                                     if !data_col_matches(&rck, slot) { continue; }
                                     let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
@@ -819,9 +839,9 @@ fn format_filter_readable(f: &crate::spec::Filter, lang: crate::spec::OutputLang
     use crate::spec::{FilterOp, OutputLanguage::*};
     let vals = f.values.iter().map(|v| v.as_display()).collect::<Vec<_>>().join(", ");
     let (eq, neq, inc, exc) = match lang {
-        En => ("=", "≠", "in", "not in"),
-        Id => ("=", "≠", "termasuk", "tidak termasuk"),
-        IdEn => ("=", "≠", "in/termasuk", "not in/tidak termasuk"),
+        En => ("=", "â‰ ", "in", "not in"),
+        Id => ("=", "â‰ ", "termasuk", "tidak termasuk"),
+        IdEn => ("=", "â‰ ", "in/termasuk", "not in/tidak termasuk"),
     };
     match f.op {
         FilterOp::Equals => format!("{} {} {}", f.field.name, eq, vals),
@@ -874,13 +894,30 @@ mod tests {
     use crate::spec::{Aggregate, FieldRef, Filter, FilterOp, PivotSpec, SubtotalConfig, ValueField};
     use crate::{Column, DataTable, DataType, Value};
 
+    #[test]
+    fn canonical_field_name_maps_legacy_refs_to_qualified_identity() {
+        let table = DataTable {
+            columns: vec![
+                Column { name: "orders.order_id".into(), original_name: Some("Order ID".into()), display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "customers.customer_name".into(), original_name: Some("Customer Name".into()), display_name: None, inferred: DataType::String, override_type: None, nullable: true },
+            ],
+            rows: vec![vec![Value::Integer(1), Value::String("Ann".into())]],
+            source: None,
+        };
+        assert_eq!(canonical_field_name(&table, "order_id").as_deref(), Some("orders.order_id"));
+        assert_eq!(canonical_field_name(&table, "Order ID").as_deref(), Some("orders.order_id"));
+        assert_eq!(canonical_field_name(&table, "orders.order_id").as_deref(), Some("orders.order_id"));
+        assert_eq!(canonical_field_name(&table, "customer_name").as_deref(), Some("customers.customer_name"));
+        assert_eq!(canonical_field_name(&table, "nope"), None);
+    }
+
     fn sample_table() -> DataTable {
         DataTable {
             columns: vec![
-                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "Product".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
-                Column { name: "Qty".into(), inferred: DataType::Integer, override_type: None, nullable: true },
+                Column { name: "Region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Product".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Sales".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "Qty".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: true },
             ],
             rows: vec![
                 vec![Value::String("East".into()), Value::String("A".into()), Value::Integer(100), Value::Integer(1)],
@@ -1042,10 +1079,10 @@ mod tests {
         }
         let t = DataTable {
             columns: vec![
-                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "Product".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
-                Column { name: "Qty".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "Region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Product".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Sales".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "Qty".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
             ],
             rows,
             source: Some("synthetic-50k".into()),
@@ -1074,9 +1111,9 @@ mod tests {
     fn ac2_2_multi_level_subtotals() {
         let t = DataTable {
             columns: vec![
-                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "City".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "Region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "City".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "Sales".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
             ],
             rows: vec![
                 vec![Value::String("East".into()), Value::String("NY".into()), Value::Integer(100)],
@@ -1207,8 +1244,8 @@ mod tests {
         // Average footer should show mean of displayed/calculated pivot values per column.
         let t = DataTable {
             columns: vec![
-                Column { name: "keca".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "jk".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "keca".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "jk".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
             ],
             rows: vec![
                 vec![Value::String("A".into()), Value::String("L".into())],
@@ -1237,9 +1274,9 @@ mod tests {
     fn row_subtotals_can_be_hidden() {
         let t = DataTable {
             columns: vec![
-                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "dept".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "amt".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "dept".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "amt".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
             ],
             rows: vec![
                 vec![Value::String("East".into()), Value::String("A".into()), Value::Integer(100)],
@@ -1264,9 +1301,9 @@ mod tests {
     fn column_totals_add_total_column_across_pivot_columns() {
         let t = DataTable {
             columns: vec![
-                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "year".into(), inferred: DataType::Integer, override_type: None, nullable: false },
-                Column { name: "sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "year".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "sales".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
             ],
             rows: vec![
                 vec![Value::String("East".into()), Value::Integer(2024), Value::Integer(100)],
@@ -1295,16 +1332,16 @@ mod tests {
         let gt = m.footer_bands.iter().find(|b| b.kind == FooterBandKind::GrandTotal).expect("grand total");
         let gt_vals: Vec<String> = gt.cells.iter().map(|c| c.text.clone()).collect();
         assert_eq!(gt_vals.last().map(|s| s.as_str()), Some("720"), "grand total column wrong: {:?}", gt_vals);
-    }
+    }
     #[test]
     fn column_level_subtotals_add_subtotal_columns_at_selected_level() {
         // 2 column levels (region -> quarter), 1 row, subtotal enabled at level 0 (region).
         let t = DataTable {
             columns: vec![
-                Column { name: "product".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "region".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "quarter".into(), inferred: DataType::String, override_type: None, nullable: false },
-                Column { name: "sales".into(), inferred: DataType::Integer, override_type: None, nullable: false },
+                Column { name: "product".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "region".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "quarter".into(), original_name: None, display_name: None, inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "sales".into(), original_name: None, display_name: None, inferred: DataType::Integer, override_type: None, nullable: false },
             ],
             rows: vec![
                 vec![Value::String("A".into()), Value::String("East".into()), Value::String("Q1".into()), Value::Integer(10)],
@@ -1341,3 +1378,4 @@ mod tests {
         assert_eq!(pb, &vec!["B".to_string(), "5".to_string(), "".to_string(), "5".to_string(), "".to_string(), "".to_string(), "".to_string()], "row B: {:?}", pb);
     }
 }
+

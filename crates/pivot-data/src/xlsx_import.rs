@@ -3,7 +3,18 @@ use calamine::{open_workbook_auto, Data, Reader};
 use pivot_core::DataTable;
 use std::path::Path;
 
-use crate::infer::{infer_columns, parse_row_strings};
+use crate::infer::parse_row_strings;
+use crate::normalize::infer_file_columns;
+
+pub fn list_sheets(path: &Path) -> Result<Vec<String>> {
+    let workbook = open_workbook_auto(path).map_err(|e| DataError::Xlsx(e.to_string()))?;
+    Ok(workbook.sheet_names().to_owned())
+}
+
+pub fn load_sheet_by_name(path: &Path, sheet: &str) -> Result<DataTable> {
+    let mut workbook = open_workbook_auto(path).map_err(|e| DataError::Xlsx(e.to_string()))?;
+    load_sheet(&mut workbook, sheet, Some(path.to_string_lossy().into_owned()))
+}
 
 pub fn load_first_sheet(path: &Path) -> Result<DataTable> {
     let mut workbook = open_workbook_auto(path).map_err(|e| DataError::Xlsx(e.to_string()))?;
@@ -26,15 +37,15 @@ pub fn load_sheet(
 ) -> Result<DataTable> {
     let range = workbook
         .worksheet_range(sheet)
-        .map_err(|e| DataError::Xlsx(e.to_string()))?;
+        .map_err(|e| DataError::Xlsx(format!("sheet '{sheet}': {e}")))?;
     let mut rows_iter = range.rows();
     let header_row = rows_iter
         .next()
-        .ok_or_else(|| DataError::Xlsx("sheet is empty".to_string()))?;
+        .ok_or_else(|| DataError::Xlsx(format!("sheet '{sheet}' is empty")))?;
     let headers: Vec<String> = header_row.iter().map(cell_to_string).collect();
     let width = headers.len();
     if width == 0 {
-        return Err(DataError::Xlsx("sheet has no columns".to_string()));
+        return Err(DataError::Xlsx(format!("sheet '{sheet}' has no columns")));
     }
     let mut raw_rows: Vec<Vec<String>> = Vec::new();
     for row in rows_iter {
@@ -42,7 +53,9 @@ pub fn load_sheet(
         r.resize(width, String::new());
         raw_rows.push(r);
     }
-    let columns = infer_columns(&headers, &raw_rows);
+    // XLSX headers are normalized to SQLite-compatible identifiers and the
+    // original header is preserved as `Column::original_name` metadata.
+    let columns = infer_file_columns(&headers, &raw_rows);
     let rows = raw_rows
         .iter()
         .map(|r| parse_row_strings(r, &columns))
@@ -128,5 +141,33 @@ mod tests {
             t.columns[3].effective_type(),
             DataType::Boolean | DataType::String | DataType::Integer
         ));
+    }
+
+    #[test]
+    fn xlsx_normalizes_headers_and_preserves_originals() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("headers.xlsx");
+        let mut workbook = Workbook::new();
+        let sheet = workbook.add_worksheet();
+        sheet.set_name("Data").unwrap();
+        sheet.write_string(0, 0, "Order ID").unwrap();
+        sheet.write_string(0, 1, "Customer Name").unwrap();
+        sheet.write_string(0, 2, "Total ($)").unwrap();
+        sheet.write_string(0, 3, "1st Item").unwrap();
+        sheet.write_string(1, 0, "A1").unwrap();
+        sheet.write_string(1, 1, "Alice").unwrap();
+        sheet.write_number(1, 2, 10.0).unwrap();
+        sheet.write_string(1, 3, "X").unwrap();
+        workbook.save(&path).unwrap();
+
+        let t = load_first_sheet(&path).unwrap();
+        assert_eq!(t.columns[0].name, "order_id");
+        assert_eq!(t.columns[0].original_name.as_deref(), Some("Order ID"));
+        assert_eq!(t.columns[1].name, "customer_name");
+        assert_eq!(t.columns[1].original_name.as_deref(), Some("Customer Name"));
+        assert_eq!(t.columns[2].name, "total");
+        assert_eq!(t.columns[2].original_name.as_deref(), Some("Total ($)"));
+        assert_eq!(t.columns[3].name, "_1st_item");
+        assert_eq!(t.columns[3].original_name.as_deref(), Some("1st Item"));
     }
 }
