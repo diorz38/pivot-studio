@@ -65,7 +65,16 @@ impl Value {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Column {
+    /// Canonical/normalized identifier (SQLite-compatible for file datasets).
     pub name: String,
+    /// Original header/name as imported (e.g. XLSX header with spaces/symbols).
+    /// Preserved as project metadata (not a SQLite `COMMENT ON`). `None` for
+    /// legacy data or when `name` is already the original identifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_name: Option<String>,
+    /// Optional user-facing display label; falls back to `original_name` then `name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub inferred: DataType,
     /// User override; when `None`, `inferred` is the effective type.
     pub override_type: Option<DataType>,
@@ -73,8 +82,43 @@ pub struct Column {
 }
 
 impl Column {
+    pub fn new(name: impl Into<String>, inferred: DataType) -> Self {
+        Self {
+            name: name.into(),
+            original_name: None,
+            display_name: None,
+            inferred,
+            override_type: None,
+            nullable: false,
+        }
+    }
+
+    pub fn with_metadata(
+        name: impl Into<String>,
+        original_name: Option<String>,
+        inferred: DataType,
+        nullable: bool,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            original_name,
+            display_name: None,
+            inferred,
+            override_type: None,
+            nullable,
+        }
+    }
+
     pub fn effective_type(&self) -> DataType {
         self.override_type.unwrap_or(self.inferred)
+    }
+
+    /// Primary label for UI: `display_name` -> `original_name` -> `name`.
+    pub fn effective_display_name(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .or(self.original_name.as_deref())
+            .unwrap_or(&self.name)
     }
 }
 
@@ -223,6 +267,8 @@ mod tests {
         let mut table = DataTable {
             columns: vec![Column {
                 name: "n".to_string(),
+                original_name: None,
+                display_name: None,
                 inferred: DataType::String,
                 override_type: Some(DataType::Integer),
                 nullable: true,

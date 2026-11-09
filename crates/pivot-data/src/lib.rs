@@ -2,6 +2,9 @@ pub mod csv_import;
 pub mod db_import;
 pub mod dbf_import;
 pub mod infer;
+pub mod normalize;
+pub mod registry;
+pub mod resolve;
 pub mod workspace;
 pub mod xlsx_import;
 
@@ -51,9 +54,13 @@ pub fn load_file(path: &Path, kind: FileKind) -> Result<DataTable> {
     }
 }
 
-pub use db_import::{connect_and_preview_sqlite, execute_pivot_mysql, execute_pivot_sqlite, list_sqlite_tables, preview_mysql, store_secret, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};
+pub use db_import::{connect_and_preview_sqlite, execute_pivot_mysql, execute_pivot_sqlite, list_sqlite_tables, load_sqlite_table, preview_mysql, store_secret, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};
+pub use xlsx_import::list_sheets;
+pub use registry::{load_dataset_table, preview_dataset_columns, preview_dataset_schema, qualify_column_names, DatasetLoadOptions, DatasetPreview, LoadedDataset};
+pub use resolve::{resolve_model, ResolveDiagnostics, ResolvedModel};
 pub use workspace::{
-    load_workspace, save_workspace, sanitize_filename, suggested_workspace_path, WorksheetView,
-    WorkspaceFile, WorkspaceManifest, WorkspaceProject, WorkspaceSource, WorkspaceView,
-    WorkspaceWorksheet, FORMAT_VERSION, WORKSPACE_EXT, WORKSHEETS_NAME, PROJECT_NAME,
+    load_workspace, save_workspace, sanitize_filename, suggested_workspace_path, Dataset,
+    JoinType, ProjectDataModel, Relation, WorksheetView, WorkspaceFile, WorkspaceManifest,
+    WorkspaceProject, WorkspaceSource, WorkspaceView, WorkspaceWorksheet, DATA_MODEL_NAME,
+    FORMAT_VERSION, PROJECT_NAME, WORKSHEETS_NAME, WORKSPACE_EXT,
 };

@@ -4,7 +4,8 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
-use crate::infer::{infer_columns, parse_row_strings};
+use crate::infer::parse_row_strings;
+use crate::normalize::infer_file_columns;
 
 pub fn load_csv(
     path: &Path,
@@ -67,7 +68,9 @@ pub fn load_csv_from_str(
         r.resize(width, String::new());
     }
 
-    let columns = infer_columns(&headers, &raw_rows);
+    // File datasets use SQLite-compatible normalized identifiers and preserve
+    // original headers as `Column::original_name` metadata.
+    let columns = infer_file_columns(&headers, &raw_rows);
     let rows = raw_rows
         .iter()
         .map(|r| parse_row_strings(r, &columns))
@@ -118,7 +121,7 @@ mod tests {
     fn no_header_generates_columns() {
         let csv = "A,1\nB,2\n";
         let t = load_csv_from_str(csv, b',', false, None).unwrap();
-        assert_eq!(t.columns[0].name, "Column1");
+        assert_eq!(t.columns[0].name, "column1");
         assert_eq!(t.row_count(), 2);
     }
 
@@ -170,5 +173,17 @@ mod tests {
         assert_eq!(t.get(0, 0), Some(&pivot_core::Value::String("00123".to_string())));
         assert_eq!(t.get(1, 0), Some(&pivot_core::Value::String("0456".to_string())));
         assert_eq!(t.get(2, 0), Some(&pivot_core::Value::String("0007".to_string())));
+    }
+
+    #[test]
+    fn csv_normalizes_headers_and_preserves_originals() {
+        let csv = "Order ID,Customer Name,Total ($)\n1,Alice,10\n";
+        let t = load_csv_from_str(csv, b',', true, None).unwrap();
+        assert_eq!(t.columns[0].name, "order_id");
+        assert_eq!(t.columns[0].original_name.as_deref(), Some("Order ID"));
+        assert_eq!(t.columns[1].name, "customer_name");
+        assert_eq!(t.columns[1].original_name.as_deref(), Some("Customer Name"));
+        assert_eq!(t.columns[2].name, "total");
+        assert_eq!(t.columns[2].original_name.as_deref(), Some("Total ($)"));
     }
 }

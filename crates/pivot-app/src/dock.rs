@@ -1,5 +1,5 @@
 //! Docked, resizable panel layout (DesignCraft docking feel).
-//! Home, Source Data (column selection), and multi-worksheet pivot editor.
+//! Home, Data Model / Source Data, and multi-worksheet pivot editor.
 
 use crate::app::PivotApp;
 use egui::{RichText, Sense, Vec2};
@@ -78,35 +78,306 @@ fn action_card(ui: &mut egui::Ui, app: &mut PivotApp, t: &Tokens, title: &str, d
 fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Source Data").strong().size(20.0).color(t.text_strong));
+        ui.label(RichText::new("Data Model / Source Data").strong().size(20.0).color(t.text_strong));
         ui.add_space(12.0);
         if let Some(name) = &app.source_name { ui.label(RichText::new(name).color(t.text_muted)); }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Open Worksheet →").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.worksheet", &Value::Null, &ctx); }
+                if ui.button("Open Worksheet ->").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.worksheet", &Value::Null, &ctx); }
             if ui.button("Home").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.home", &Value::Null, &ctx); }
         });
     });
-    ui.label(RichText::new("Choose which columns are processed in pivots. Unselected columns are hidden from field pickers/filters and stale pivot references will block recompute until fixed.").color(t.text_muted).size(12.0));
-    ui.add_space(8.0);
-
-    let Some(table) = app.table.clone() else {
-        egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(12)).corner_radius(6.0).show(ui, |ui| {
-            ui.label(RichText::new("No source loaded.").strong().color(t.text_strong));
-            ui.label(RichText::new("Import CSV/XLSX/DBF or connect SQLite from Home.").color(t.text_muted));
-        });
-        return;
-    };
-
-    let total = table.columns.len();
-    let selected = match &app.selected_columns { None => total, Some(s) => s.len() };
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("Columns: {selected}/{total} selected  •  Rows: {}", table.row_count())).color(t.text));
-        if ui.small_button("Select all").clicked() { app.select_all_columns(true); }
-        if ui.small_button("Select none").clicked() { app.select_all_columns(false); }
-    });
+    ui.label(RichText::new("1) Add datasets  2) pick the main table  3) relate a code/id column to a label column in another dataset  4) Resolve. Lookup relations never change the main table's row count or sums.").color(t.text_muted).size(12.0));
     ui.add_space(8.0);
 
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        // Data model / multi-source section
+        egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(10)).corner_radius(6.0).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Datasets").strong().size(15.0).color(t.text_strong));
+                let mut add_file_path: Option<std::path::PathBuf> = None;
+                let mut add_sqlite_path: Option<std::path::PathBuf> = None;
+                if ui.button("Add file dataset...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_title("Add dataset (CSV/XLSX/DBF)").add_filter("Data", &["csv","tsv","txt","xlsx","xls","xlsm","dbf"]).pick_file() {
+                        if app.add_dataset_sheet.is_empty() { app.add_dataset_sheet = "Sheet1".to_string(); }
+                        add_file_path = Some(path);
+                    }
+                }
+                if ui.button("Add SQLite dataset...").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().set_title("Select SQLite database").add_filter("SQLite", &["db","sqlite","sqlite3"]).pick_file() {
+                        add_sqlite_path = Some(path);
+                    }
+                }
+                // XLSX sheet picker (shown when the picked file is XLSX and has multiple sheets)
+                if let Some(path) = &add_file_path {
+                    let is_xlsx = path.extension().and_then(|e| e.to_str()).map(|e| matches!(e.to_ascii_lowercase().as_str(), "xlsx"|"xls"|"xlsm")).unwrap_or(false);
+                    if is_xlsx {
+                        match pivot_data::list_sheets(path) {
+                            Ok(sheets) if sheets.len() > 1 => {
+                                if app.add_dataset_sheet.is_empty() || !sheets.iter().any(|s| s == &app.add_dataset_sheet) { app.add_dataset_sheet = sheets[0].clone(); }
+                                let mut chosen = app.add_dataset_sheet.clone();
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new("XLSX sheet:").color(t.text_muted).size(11.0));
+                                    egui::ComboBox::from_id_salt("add_dataset_sheet").selected_text(chosen.clone()).show_ui(ui, |ui| {
+                                        for s in &sheets { ui.selectable_value(&mut chosen, s.clone(), s); }
+                                    });
+                                });
+                                app.add_dataset_sheet = chosen;
+                            }
+                            Ok(sheets) if sheets.len() == 1 => { app.add_dataset_sheet = sheets[0].clone(); }
+                            _ => {}
+                        }
+                    }
+                }
+                // SQLite table picker (shown when tables available)
+                let sqlite_tables: Vec<String>;
+                if let Some(path) = &add_sqlite_path {
+                    sqlite_tables = pivot_data::list_sqlite_tables(path).unwrap_or_default();
+                    if sqlite_tables.is_empty() { app.status = "SQLite database has no tables.".to_string(); }
+                    else {
+                        if app.add_dataset_table.is_empty() || !sqlite_tables.iter().any(|t| t == &app.add_dataset_table) { app.add_dataset_table = sqlite_tables[0].clone(); }
+                        let mut chosen = app.add_dataset_table.clone();
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("SQLite table:").color(t.text_muted).size(11.0));
+                            egui::ComboBox::from_id_salt("add_dataset_table").selected_text(chosen.clone()).show_ui(ui, |ui| {
+                                for tname in &sqlite_tables { ui.selectable_value(&mut chosen, tname.clone(), tname); }
+                            });
+                        });
+                        app.add_dataset_table = chosen;
+                    }
+                }
+                if let Some(path) = add_file_path {
+                    let is_xlsx = path.extension().and_then(|e| e.to_str()).map(|e| matches!(e.to_ascii_lowercase().as_str(), "xlsx"|"xls"|"xlsm")).unwrap_or(false);
+                    if is_xlsx {
+                        let sheet = app.add_dataset_sheet.clone();
+                        app.add_dataset_from_file_with_sheet(path, if sheet.trim().is_empty() { None } else { Some(sheet) });
+                    } else {
+                        app.add_dataset_from_file(path);
+                    }
+                }
+                if let (Some(path), table) = (add_sqlite_path, app.add_dataset_table.clone()) {
+                    if !table.trim().is_empty() {
+                        let label = table.clone();
+                        app.add_dataset_sqlite(path, table);
+                        app.status = format!("Added SQLite dataset using table '{label}'. Resolve Data Model to use it in pivots.");
+                    }
+                }
+                let resolve_enabled = !app.data_model_resolving;
+                if ui.add_enabled(resolve_enabled, egui::Button::new(if app.data_model_resolving { "Resolving..." } else { "Resolve Data Model" })).clicked() {
+                    app.request_resolve_model();
+                }
+            });
+            ui.add_space(4.0);
+            if app.data_model.datasets.is_empty() {
+                ui.label(RichText::new("No datasets yet. Add a file (CSV/XLSX/DBF) or a SQLite table above. A single imported file works without a model - this page is for combining several.").color(t.text_muted));
+            } else {
+                egui::Grid::new("datasets_grid").striped(true).spacing([12.0, 6.0]).show(ui, |ui| {
+                    ui.label(RichText::new("Main").strong().color(t.text_strong));
+                    ui.label(RichText::new("Dataset").strong().color(t.text_strong));
+                    ui.label(RichText::new("Source").strong().color(t.text_strong));
+                    ui.label(RichText::new("").strong().color(t.text_strong));
+                    ui.end_row();
+                    let mut remove: Option<usize> = None;
+                    let mut set_base: Option<String> = None;
+                    for (i, ds) in app.data_model.datasets.iter().enumerate() {
+                        let full_src = match &ds.source {
+                            pivot_data::WorkspaceSource::File { path, file_kind, sheet } => {
+                                let k = file_kind.clone().unwrap_or_else(|| "file".into());
+                                let sh = sheet.as_deref().filter(|s| !s.trim().is_empty()).map(|s| format!("#{s}")).unwrap_or_default();
+                                format!("{k}{sh}:{path}")
+                            }
+                            pivot_data::WorkspaceSource::Sqlite { path, table } => format!("sqlite:{path}:{table}"),
+                            pivot_data::WorkspaceSource::MySql { profile } => format!("mysql:{}.{}", profile.database, profile.table),
+                            pivot_data::WorkspaceSource::None => "(none)".to_string(),
+                        };
+                        // Short label (file name [+sheet] / SQLite table); full path on hover.
+                        let short_src = match &ds.source {
+                            pivot_data::WorkspaceSource::Sqlite { table, .. } => format!("SQLite table: {table}"),
+                            _ => {
+                                let (kind, path) = full_src.split_once(':').unwrap_or(("", full_src.as_str()));
+                                let sh = kind.split('#').nth(1).map(|s| format!("  [{s}]")).unwrap_or_default();
+                                let name = std::path::Path::new(path).file_name().and_then(|f| f.to_str()).unwrap_or(path);
+                                format!("{name}{sh}")
+                            }
+                        };
+                        let is_base = app.data_model.base_dataset_id.as_deref() == Some(ds.id.as_str());
+                        let col_count = app.dataset_schema_cache.get(&ds.id).map(|c| c.len());
+                        let alias = if let Some(n) = col_count { format!("{}  ({n} cols)", ds.alias) } else { ds.alias.clone() };
+                        if ui.radio(is_base, "").on_hover_text("Use as main (processed) table").clicked() && !is_base { set_base = Some(ds.id.clone()); }
+                        ui.label(RichText::new(alias).color(if is_base { t.text_strong } else { t.text }).size(13.0));
+                        ui.label(RichText::new(short_src).color(t.text_muted).size(11.5)).on_hover_text(full_src.clone());
+                        ui.horizontal(|ui| { if ui.small_button("Remove").clicked() { remove = Some(i); } });
+                        ui.end_row();
+                    }
+                    if let Some(id) = set_base {
+                        app.data_model.base_dataset_id = Some(id);
+                        app.data_model.relations.clear();
+                        app.clear_relation_draft();
+                        for ws in &mut app.worksheets { ws.model = None; }
+                    }
+                    if let Some(i) = remove {
+                        let removed = app.data_model.datasets.remove(i);
+                        app.dataset_schema_cache.remove(&removed.id);
+                        app.data_model.relations.retain(|r| r.left_dataset_id != removed.id && r.right_dataset_id != removed.id);
+                        if app.data_model.base_dataset_id.as_deref() == Some(removed.id.as_str()) {
+                            app.data_model.base_dataset_id = app.data_model.datasets.first().map(|d| d.id.clone());
+                        }
+                        if app.rel_base_dataset == removed.id || app.rel_lookup_dataset == removed.id { app.clear_relation_draft(); }
+                        for ws in &mut app.worksheets { ws.model = None; }
+                        app.table = None;
+                    }
+                });
+                // Keep column schemas warm so the relation pickers never need a "load columns" step.
+                if app.preview_rx.is_none() {
+                    if let Some(missing) = app.data_model.datasets.iter().find(|d| !app.dataset_schema_cache.contains_key(&d.id)).map(|d| d.id.clone()) {
+                        app.load_dataset_schema(&missing);
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Reading columns...").color(t.text_muted).size(11.5));
+                        if ui.small_button("Cancel").clicked() { app.cancel_preview(); }
+                    });
+                }
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(RichText::new("Related table (add columns from another dataset)").strong().size(15.0).color(t.text_strong));
+                ui.label(RichText::new("Main table keeps every row and every sum: the key column is matched to the related table's key, and the checked columns are copied in as extra columns. Unmatched keys stay empty.").color(t.text_muted).size(11.5));
+                if !app.data_model.relations.is_empty() {
+                    let mut remove_id: Option<String> = None;
+                    egui::Grid::new("relations_list").striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
+                        for rel in &app.data_model.relations {
+                            let base_alias = app.data_model.datasets.iter().find(|d| d.id == rel.left_dataset_id).map(|d| d.alias.as_str()).unwrap_or(rel.left_dataset_id.as_str());
+                            let lookup_alias = app.data_model.datasets.iter().find(|d| d.id == rel.right_dataset_id).map(|d| d.alias.as_str()).unwrap_or(rel.right_dataset_id.as_str());
+                            let label = rel.label_columns.as_ref().map(|v| v.join(", ")).filter(|s| !s.is_empty()).unwrap_or_else(|| "(all)".to_string());
+                            ui.label(RichText::new(format!("{} . {}  ->  {}", base_alias, rel.left_column, lookup_alias)).color(t.text).size(12.5));
+                            ui.label(RichText::new(format!("{}.{} = {}.{}   add: {}.{}", base_alias, rel.left_column, lookup_alias, rel.right_column, lookup_alias, label)).color(t.text_muted).size(11.5));
+                            if ui.small_button("Remove").clicked() { remove_id = Some(rel.id.clone()); }
+                            ui.end_row();
+                        }
+                    });
+                    if let Some(id) = remove_id { app.remove_relation(&id); }
+                }
+
+                ui.add_space(8.0);
+                let base_id = app.data_model.base_dataset_id.clone()
+                    .filter(|id| app.data_model.datasets.iter().any(|d| &d.id == id))
+                    .or_else(|| app.data_model.datasets.first().map(|d| d.id.clone()));
+                let related: Vec<(String, String)> = match &base_id {
+                    Some(base) => app.data_model.datasets.iter().filter(|d| &d.id != base).map(|d| (d.id.clone(), d.alias.clone())).collect(),
+                    None => Vec::new(),
+                };
+                if related.is_empty() {
+                    ui.label(RichText::new("Add a second dataset above, then pick a related table here.").color(t.text_muted).size(12.0));
+                } else {
+                    let base_id = base_id.expect("base id present when related is non-empty");
+                    if app.rel_base_dataset != base_id || !related.iter().any(|(id, _)| id == &app.rel_lookup_dataset) {
+                        app.rel_base_dataset = base_id.clone();
+                        app.rel_lookup_dataset = related[0].0.clone();
+                        app.rel_base_column.clear();
+                        app.rel_lookup_column.clear();
+                        app.rel_label_columns.clear();
+                    }
+                    app.rel_edit_id = None;
+                    let base_cols = app.dataset_columns(&base_id).to_vec();
+                    let related_cols = app.dataset_columns(&app.rel_lookup_dataset).to_vec();
+                    let label_cols: Vec<String> = related_cols.iter().filter(|c| **c != app.rel_lookup_column).cloned().collect();
+                    app.rel_label_columns.retain(|c| label_cols.contains(c));
+                    let related_alias = related.iter().find(|(id, _)| id == &app.rel_lookup_dataset).map(|(_, a)| a.clone()).unwrap_or_default();
+                    egui::Frame::new().fill(t.panel_alt).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(10)).corner_radius(6.0).show(ui, |ui| {
+                        egui::Grid::new("relation_simple").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+                            ui.label(RichText::new("Related table").color(t.text_strong));
+                            egui::ComboBox::from_id_salt("rs_lookup_ds").width(260.0).selected_text(related_alias.clone()).show_ui(ui, |ui| {
+                                for (id, alias) in &related {
+                                    if ui.selectable_value(&mut app.rel_lookup_dataset, id.clone(), alias).changed() {
+                                        app.rel_lookup_column.clear();
+                                        app.rel_label_columns.clear();
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                            ui.label(RichText::new("Key in main table").color(t.text_strong));
+                            if base_cols.is_empty() {
+                                ui.label(RichText::new("loading columns...").color(t.text_muted));
+                            } else {
+                                egui::ComboBox::from_id_salt("rs_base_col").width(260.0).selected_text(if app.rel_base_column.is_empty() { "(pick column)".to_string() } else { app.rel_base_column.clone() }).show_ui(ui, |ui| {
+                                    for c in &base_cols { ui.selectable_value(&mut app.rel_base_column, c.clone(), c.as_str()); }
+                                });
+                            }
+                            ui.end_row();
+                            ui.label(RichText::new("Same key in related").color(t.text_strong));
+                            if related_cols.is_empty() {
+                                ui.label(RichText::new("loading columns...").color(t.text_muted));
+                            } else {
+                                egui::ComboBox::from_id_salt("rs_lookup_col").width(260.0).selected_text(if app.rel_lookup_column.is_empty() { "(pick column)".to_string() } else { app.rel_lookup_column.clone() }).show_ui(ui, |ui| {
+                                    for c in &related_cols {
+                                        if ui.selectable_value(&mut app.rel_lookup_column, c.clone(), c.as_str()).changed() { app.rel_label_columns.clear(); }
+                                    }
+                                });
+                            }
+                            ui.end_row();
+                            ui.label(RichText::new("Columns to add to main").color(t.text_strong));
+                            if label_cols.is_empty() {
+                                ui.label(RichText::new("(pick the related key first)").color(t.text_muted));
+                            } else {
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new("Checked columns are appended to the main table (related key excluded).").color(t.text_muted).size(11.0));
+                                    egui::ScrollArea::vertical().id_salt("rs_label_scroll").max_height(150.0).show(ui, |ui| {
+                                        for c in &label_cols {
+                                            let mut checked = app.rel_label_columns.contains(c);
+                                            if ui.checkbox(&mut checked, c.as_str()).changed() {
+                                                if checked { app.rel_label_columns.insert(c.clone()); } else { app.rel_label_columns.remove(c); }
+                                            }
+                                        }
+                                    });
+                                });
+                            }
+                            ui.end_row();
+                        });
+                        ui.add_space(8.0);
+                        let ready = !app.rel_base_column.is_empty() && app.rel_base_column != app.rel_lookup_column && !app.rel_lookup_column.is_empty() && !app.rel_label_columns.is_empty();
+                        ui.horizontal(|ui| {
+                            if ui.add_enabled(ready, egui::Button::new("Add relation and apply")).clicked() {
+                                app.rel_name.clear();
+                                app.save_relation_from_draft();
+                                app.request_resolve_model();
+                            }
+                        });
+                        if let Some(msg) = &app.rel_message { ui.add_space(4.0); ui.label(RichText::new(msg).color(t.accent).size(11.5)); }
+                    });
+                }
+            }
+            if !app.data_model_diagnostics.errors.is_empty() || !app.data_model_diagnostics.warnings.is_empty() {
+                ui.add_space(6.0);
+                for e in &app.data_model_diagnostics.errors { ui.label(RichText::new(format!("Error: {e}")).color(egui::Color32::from_rgb(220, 90, 90)).size(11.5)); }
+                for w in &app.data_model_diagnostics.warnings { ui.label(RichText::new(format!("Warning: {w}")).color(egui::Color32::from_rgb(220, 160, 60)).size(11.0)); }
+            }
+        });
+
+        ui.add_space(10.0);
+        // Legacy/single-source column selection (still useful for one resolved table)
+        let Some(table) = app.table.clone() else {
+            egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(12)).corner_radius(6.0).show(ui, |ui| {
+                ui.label(RichText::new("No resolved table loaded.").strong().color(t.text_strong));
+                ui.label(RichText::new("For a single source: import/load data from Home. For multi-source: add datasets, define relations, then Resolve Data Model.").color(t.text_muted));
+            });
+            return;
+        };
+        if app.uses_multi_source_model() || table.columns.iter().any(|c| c.name.contains('.')) {
+            ui.label(RichText::new(format!("Resolved model: {} rows x {} columns. Fields are available in Worksheet layout (qualified as alias.column).", table.row_count(), table.columns.len())).color(t.text));
+            return;
+        }
+
+        let total = table.columns.len();
+        let selected = match &app.selected_columns { None => total, Some(s) => s.len() };
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("Columns: {selected}/{total} selected  |  Rows: {}", table.row_count())).color(t.text));
+            if ui.small_button("Select all").clicked() { app.select_all_columns(true); }
+            if ui.small_button("Select none").clicked() { app.select_all_columns(false); }
+        });
+        ui.add_space(8.0);
         egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(10)).corner_radius(6.0).show(ui, |ui| {
             ui.label(RichText::new("Source columns").strong().color(t.text_strong));
             ui.add_space(6.0);
@@ -121,7 +392,8 @@ fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                     let mut checked = app.is_column_selected(&col.name);
                     let before = checked;
                     ui.checkbox(&mut checked, "");
-                    ui.label(RichText::new(&col.name).color(if checked { t.text_strong } else { t.text_disabled }));
+                    let label = if let Some(o) = &col.original_name { format!("{} ({o})", col.name) } else { col.name.clone() };
+                    ui.label(RichText::new(label).color(if checked { t.text_strong } else { t.text_disabled }));
                     ui.label(RichText::new(data_type_label(col.effective_type())).color(t.text_muted).size(11.5));
                     let stale_in: Vec<String> = app.worksheets.iter().filter(|w| w.spec.rows.iter().any(|f| f.name == col.name) || w.spec.columns.iter().any(|f| f.name == col.name) || w.spec.values.iter().any(|v| v.field.name == col.name) || w.spec.filters.iter().any(|f| f.field.name == col.name)).map(|w| w.name.clone()).collect();
                     let status = if stale_in.is_empty() { String::new() } else { format!("used by: {}", stale_in.join(", ")) };
@@ -134,6 +406,7 @@ fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
         });
     });
 }
+
 
 fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
@@ -220,7 +493,7 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 let stale = app.stale_spec_refs(&app.active_spec().clone());
                 if !stale.is_empty() { ui.label(RichText::new(format!("Stale refs: {}", stale.join(", "))).color(egui::Color32::from_rgb(220, 120, 60)).size(11.0)); }
             });
-            ui.label(RichText::new("Edit to change only the Notes/‘Sumber data’ label in pivot output (real data source is unchanged).").color(t.text_muted).size(10.5));
+            ui.label(RichText::new("Edit to change only the Notes/'Sumber data' label in pivot output (real data source is unchanged).").color(t.text_muted).size(10.5));
             ui.add_space(4.0);
             if app.table.is_some() || app.db_source.is_some() { filters_ui(app, ui, &t); }
             else { ui.label(RichText::new("Import data (CSV/XLSX/DBF) or connect SQLite to configure filters.").color(t.text_muted)); }
@@ -489,7 +762,7 @@ fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
 fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(model) = app.active_model() {
         ui.label(RichText::new(&model.title).strong().color(t.text_strong).size(16.0));
-        ui.label(RichText::new(format!("Worksheet: {}  •  Theme: {} / {}", app.active_sheet().name, app.table_color_theme.label(), app.table_border_theme.label())).color(t.text_muted).size(11.0));
+        ui.label(RichText::new(format!("Worksheet: {}  |  Theme: {} / {}", app.active_sheet().name, app.table_color_theme.label(), app.table_border_theme.label())).color(t.text_muted).size(11.0));
         ui.add_space(6.0);
         render_model(model, ui, t, app.brightness, app.table_color_theme, app.table_border_theme);
     } else if app.table.is_some() {
@@ -510,7 +783,7 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
             else { ui.label(RichText::new("Click Recompute if the result doesn't appear.").color(t.text_muted)); }
         });
         ui.add_space(8.0);
-        ui.label(RichText::new(format!("Data loaded: {} rows × {} cols total. Raw data preview hidden; use source column selection and pivot layout.", app.row_count(), app.col_count())).color(t.text_muted).size(11.0));
+        ui.label(RichText::new(format!("Data loaded: {} rows x {} cols total. Raw data preview hidden; use source column selection and pivot layout.", app.row_count(), app.col_count())).color(t.text_muted).size(11.0));
     } else {
         ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
         ui.label(RichText::new("Import data from Home to begin.").color(t.text_muted));

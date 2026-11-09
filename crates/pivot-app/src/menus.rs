@@ -36,7 +36,13 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
             cmd("Exit", "app.exit"),
         ]),
         ("Edit", vec![cmd("Undo", "edit.undo"), cmd("Redo", "edit.redo"), Item::Sep, cmd("Copy", "edit.copy")]),
-        ("Data", vec![cmd("Refresh", "data.refresh"), cmd("Field Types...", "data.types")]),
+        ("Data", vec![
+            cmd("Add Dataset...", "data.add_dataset"),
+            cmd("Resolve Data Model", "data.resolve_model"),
+            Item::Sep,
+            cmd("Refresh", "data.refresh"),
+            cmd("Field Types...", "data.types"),
+        ]),
         ("Pivot", vec![cmd("Add Worksheet", "pivot.add_sheet"), cmd("Recompute", "pivot.recompute"), cmd("Clear Layout", "pivot.clear")]),
         ("Format", vec![
             Item::Sub("Color Theme".to_string(), vec![

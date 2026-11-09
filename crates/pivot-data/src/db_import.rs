@@ -198,14 +198,23 @@ pub fn build_group_by_sql(table: &str, spec: &PivotSpec, dialect_sqlite: bool) -
         let qi = quote_ident(&f.name)?;
         select.push(qi.clone());
         group.push(qi);
-        columns.push(Column { name: f.name.clone(), inferred: DataType::String, override_type: None, nullable: true });
+        columns.push(Column::with_metadata(f.name.clone(), None, DataType::String, true));
     }
     for (i, v) in spec.values.iter().enumerate() {
         let expr = aggregate_sql(v.aggregate, &v.field.name)?;
         let alias = format!("v{i}");
         select.push(format!("{expr} AS \"{alias}\""));
         // Column name = SQL alias (matches result set). ValueField in result-spec uses alias as field; display_name preserves effective name.
-        columns.push(Column { name: alias, inferred: if matches!(v.aggregate, Aggregate::Count|Aggregate::CountDistinct) { DataType::Integer } else { DataType::Decimal }, override_type: None, nullable: true });
+        columns.push(Column::with_metadata(
+            alias,
+            None,
+            if matches!(v.aggregate, Aggregate::Count | Aggregate::CountDistinct) {
+                DataType::Integer
+            } else {
+                DataType::Decimal
+            },
+            true,
+        ));
     }
     let mut params: Vec<ParamValue> = Vec::new();
     let mut where_parts: Vec<String> = Vec::new();
@@ -277,12 +286,34 @@ pub fn list_sqlite_tables(path: &PathBuf) -> Result<Vec<String>> {
     Ok(names)
 }
 
-pub fn connect_and_preview_sqlite(path: &PathBuf, table: &str, limit: usize, cancel: Option<&AtomicBool>) -> Result<DataTable> {
+pub fn connect_and_preview_sqlite(path: &PathBuf, table_name: &str, limit: usize, cancel: Option<&AtomicBool>) -> Result<DataTable> {
+    validate_identifier(table_name)?;
+    if cancel.map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) { return Err(DataError::Cancelled); }
+    let conn = rusqlite::Connection::open(path).map_err(|e| DataError::Database(e.to_string()))?;
+    let sql = format!("SELECT * FROM {} LIMIT {}", quote_ident(table_name)?, limit.max(1));
+    let mut dt = query_sqlite_conn(&conn, &sql, &[], cancel)?;
+    dt.source = Some(format!("sqlite:{}:{}", path.display(), table_name));
+    Ok(dt)
+}
+
+/// Load an entire SQLite table into a `DataTable` (MVP materialization path).
+/// Applies an optional `row_limit` (capped rows, reported in source metadata).
+pub fn load_sqlite_table(path: &PathBuf, table: &str, row_limit: Option<usize>, cancel: Option<&AtomicBool>) -> Result<DataTable> {
     validate_identifier(table)?;
     if cancel.map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) { return Err(DataError::Cancelled); }
     let conn = rusqlite::Connection::open(path).map_err(|e| DataError::Database(e.to_string()))?;
-    let sql = format!("SELECT * FROM {} LIMIT {}", quote_ident(table)?, limit.max(1));
-    query_sqlite_conn(&conn, &sql, &[], cancel)
+    let sql = match row_limit.filter(|n| *n > 0) {
+        Some(n) => format!("SELECT * FROM {} LIMIT {}", quote_ident(table)?, n),
+        None => format!("SELECT * FROM {}", quote_ident(table)?),
+    };
+    let mut dt = query_sqlite_conn(&conn, &sql, &[], cancel)?;
+    let limited = row_limit.filter(|n| *n > 0 && dt.rows.len() >= *n).is_some();
+    dt.source = Some(if limited {
+        format!("sqlite:{}:{} (capped at {} rows)", path.display(), table, row_limit.unwrap_or(0))
+    } else {
+        format!("sqlite:{}:{}", path.display(), table)
+    });
+    Ok(dt)
 }
 
 pub fn execute_pivot_sqlite(path: &PathBuf, table: &str, spec: &PivotSpec, cancel: Option<&AtomicBool>) -> Result<ThemedTableModel> {
@@ -309,8 +340,15 @@ fn query_sqlite_conn(conn: &rusqlite::Connection, sql: &str, params: &[ParamValu
         for i in 0..col_count { out.push(sqlite_value(row, i)); }
         rows_out.push(out);
     }
-    let columns = names.into_iter().map(|n| Column { name: n, inferred: DataType::String, override_type: None, nullable: true }).collect();
-    Ok(DataTable { columns, rows: rows_out, source: Some("sqlite".into()) })
+    let columns = names
+        .into_iter()
+        .map(|n| Column::with_metadata(n, None, DataType::String, true))
+        .collect();
+    Ok(DataTable {
+        columns,
+        rows: rows_out,
+        source: Some("sqlite".into()),
+    })
 }
 fn param_to_rusqlite(p: &ParamValue) -> Box<dyn rusqlite::ToSql> {
     match p {
@@ -402,8 +440,15 @@ fn collect_mysql_result<P: mysql::prelude::Protocol>(result: mysql::QueryResult<
         for i in 0..names.len() { out.push(mysql_value(row.as_ref(i))); }
         rows_out.push(out);
     }
-    let columns = names.into_iter().map(|n| Column { name: n, inferred: DataType::String, override_type: None, nullable: true }).collect();
-    Ok(DataTable { columns, rows: rows_out, source: Some("mysql".into()) })
+    let columns = names
+        .into_iter()
+        .map(|n| Column::with_metadata(n, None, DataType::String, true))
+        .collect();
+    Ok(DataTable {
+        columns,
+        rows: rows_out,
+        source: Some("mysql".into()),
+    })
 }
 fn param_to_mysql(p: &ParamValue) -> mysql::Value {
     match p {
@@ -511,9 +556,9 @@ mod tests {
         let push = execute_pivot_sqlite(&path, "sales", &spec, None).unwrap();
         let table = DataTable {
             columns: vec![
-                Column { name: "Region".into(), inferred: DataType::String, override_type: None, nullable: true },
-                Column { name: "Product".into(), inferred: DataType::String, override_type: None, nullable: true },
-                Column { name: "Sales".into(), inferred: DataType::Integer, override_type: None, nullable: true },
+                Column::with_metadata("Region", None, DataType::String, true),
+                Column::with_metadata("Product", None, DataType::String, true),
+                Column::with_metadata("Sales", None, DataType::Integer, true),
             ],
             rows: vec![
                 vec![Value::String("East".into()), Value::String("A".into()), Value::Integer(100)],

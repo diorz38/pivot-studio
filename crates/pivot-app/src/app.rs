@@ -1,13 +1,14 @@
 //! Application state and egui frame/update (DesignCraft pattern, simplified).
 
 use crate::{chrome, dock, menus};
-use pivot_core::pivot::compute;
+use pivot_core::pivot::{compute, resolve_field_index};
 use pivot_core::{
     Aggregate, DataTable, DataType, FieldRef, Filter, FilterOp, FooterBandSpec, PivotSpec, SubtotalConfig,
     ThemedTableModel, Value as CoreValue, ValueField,
 };
 use pivot_data::{FileKind, db_import::{self, CredentialMode, MySqlProfile}};
 use pivot_data::workspace::{self, WorkspaceFile, WorkspaceSource, WorkspaceView, WorkspaceWorksheet, WorksheetView};
+use pivot_data::{Dataset, DatasetLoadOptions, JoinType, ProjectDataModel, Relation, ResolveDiagnostics, resolve_model};
 use pivot_export::ExportStyle;
 use pivot_theme::{
     apply,
@@ -25,6 +26,13 @@ use std::thread;
 pub enum LoadMsg {
     Progress(String),
     Done(Result<LoadedTable, String>),
+    /// Resolved multi-source data model (Phase 3/5 MVP).
+    ModelDone(Result<(DataTable, ResolveDiagnostics), String>),
+}
+
+pub enum PreviewMsg {
+    /// Async dataset schema preview result (`Box`ed: the payload is large).
+    Done(Result<Box<pivot_data::DatasetPreview>, String>),
 }
 
 pub struct LoadedTable {
@@ -112,6 +120,31 @@ pub struct PivotApp {
     pub worksheets: Vec<WorksheetState>,
     pub active_worksheet: usize,
     pub selected_columns: Option<BTreeSet<String>>,
+    /// v3 project data model (datasets/relations).
+    pub data_model: ProjectDataModel,
+    pub data_model_diagnostics: ResolveDiagnostics,
+    pub data_model_resolving: bool,
+    /// Cached normalized column names per dataset id for UI pickers/previews.
+    pub dataset_schema_cache: std::collections::HashMap<String, Vec<String>>,
+    /// Cached dataset schema previews (normalized columns + sampled rows) for the Data Model page.
+    pub dataset_preview_cache: std::collections::HashMap<String, pivot_data::DatasetPreview>,
+    pub schema_loading_dataset: Option<String>,
+    /// In-flight async dataset schema preview (dataset id + channel) and its cancel flag.
+    pub preview_rx: Option<(String, mpsc::Receiver<PreviewMsg>)>,
+    pub preview_cancel: Option<Arc<AtomicBool>>,
+    pub projection_message: Option<String>,
+    /// Sheet/table picker draft for the "add dataset" flow (UI state only).
+    pub add_dataset_sheet: String,
+    pub add_dataset_table: String,
+    // Relation editor draft (simple lookup/enrichment, m00581)
+    pub rel_edit_id: Option<String>,
+    pub rel_base_dataset: String,
+    pub rel_base_column: String,
+    pub rel_lookup_dataset: String,
+    pub rel_lookup_column: String,
+    pub rel_label_columns: std::collections::HashSet<String>,
+    pub rel_name: String,
+    pub rel_message: Option<String>,
     pub pivot_computing: Option<PivotComputeState>,
     pub exporting: Option<ExportState>,
     next_sheet_no: usize,
@@ -177,6 +210,25 @@ impl PivotApp {
             worksheets: vec![WorksheetState::new("sheet-1".to_string(), WorksheetState::default_name(1), 1, default_spec())],
             active_worksheet: 0,
             selected_columns: None,
+            data_model: ProjectDataModel::default(),
+            data_model_diagnostics: ResolveDiagnostics::default(),
+            data_model_resolving: false,
+            dataset_schema_cache: std::collections::HashMap::new(),
+            dataset_preview_cache: std::collections::HashMap::new(),
+            preview_rx: None,
+            preview_cancel: None,
+            projection_message: None,
+            schema_loading_dataset: None,
+            add_dataset_sheet: String::new(),
+            add_dataset_table: String::new(),
+            rel_edit_id: None,
+            rel_base_dataset: String::new(),
+            rel_base_column: String::new(),
+            rel_lookup_dataset: String::new(),
+            rel_lookup_column: String::new(),
+            rel_label_columns: std::collections::HashSet::new(),
+            rel_name: String::new(),
+            rel_message: None,
             pivot_computing: None,
             exporting: None,
             next_sheet_no: 2,
@@ -234,8 +286,16 @@ impl PivotApp {
         self.table.as_ref().map(|t| t.column_count()).unwrap_or(0)
     }
 
+    pub fn uses_multi_source_model(&self) -> bool {
+        self.data_model.datasets.iter().filter(|d| d.enabled).count() > 1
+            || (self.data_model.datasets.iter().filter(|d| d.enabled).count() == 1 && !self.data_model.relations.is_empty())
+    }
+
     pub fn available_columns(&self) -> Vec<(String, DataType)> {
         let Some(table) = &self.table else { return Vec::new() };
+        if self.uses_multi_source_model() || (self.data_model.exposed_columns.as_ref().map_or(true, |v| v.is_empty()) && self.table.as_ref().is_some_and(|t| t.columns.iter().any(|c| c.name.contains('.')))) {
+            return table.columns.iter().map(|c| (c.name.clone(), c.effective_type())).collect();
+        }
         table
             .columns
             .iter()
@@ -245,6 +305,17 @@ impl PivotApp {
     }
 
     pub fn is_column_selected(&self, name: &str) -> bool {
+        // Resolved multi-source tables expose columns directly; treat all as selected.
+        if self.table.as_ref().is_some_and(|t| t.columns.iter().any(|c| c.name.contains('.'))) && self.uses_multi_source_model() {
+            return true;
+        }
+        if let Some(idx) = self.table.as_ref().and_then(|t| resolve_field_index(t, name)) {
+            let canon = self.table.as_ref().unwrap().columns[idx].name.as_str();
+            return match &self.selected_columns {
+                None => true,
+                Some(set) => set.contains(canon) || set.contains(name),
+            };
+        }
         match &self.selected_columns {
             None => true,
             Some(set) => set.contains(name),
@@ -280,12 +351,10 @@ impl PivotApp {
 
     pub fn stale_spec_refs(&self, spec: &PivotSpec) -> Vec<String> {
         let Some(table) = &self.table else { return Vec::new() };
-        let existing: BTreeSet<&str> = table.columns.iter().map(|c| c.name.as_str()).collect();
         let mut refs = Vec::new();
         let mut push = |name: &str| {
-            if (!existing.contains(name) || !self.is_column_selected(name))
-                && !refs.iter().any(|r: &String| r == name)
-            {
+            let ok = resolve_field_index(table, name).is_some() && self.is_column_selected(name);
+            if !ok && !refs.iter().any(|r: &String| r == name) {
                 refs.push(name.to_string());
             }
         };
@@ -328,50 +397,70 @@ impl PivotApp {
     }
 
     pub fn poll_loading(&mut self, ctx: &egui::Context) {
-        let mut finished: Option<Result<LoadedTable, String>> = None;
+        enum Finished { File(Result<LoadedTable, String>), Model(Result<(DataTable, ResolveDiagnostics), String>) }
+        let mut finished: Option<Finished> = None;
         if let Some(load) = &mut self.loading {
             while let Ok(msg) = load.rx.try_recv() {
                 match msg {
                     LoadMsg::Progress(s) => { load.progress = s.clone(); self.status = s; }
-                    LoadMsg::Done(res) => { finished = Some(res); break; }
+                    LoadMsg::Done(res) => { finished = Some(Finished::File(res)); break; }
+                    LoadMsg::ModelDone(res) => { finished = Some(Finished::Model(res)); break; }
                 }
             }
         }
-        if let Some(res) = finished {
+        if let Some(f) = finished {
             let preserve = self.loading.as_ref().map(|l| l.preserve_workspace).unwrap_or(false);
             self.loading = None;
-            crate::devlog!("poll_loading: done preserve={} before_sheets=[{}]", preserve, self.debug_sheet_summary());
-            match res {
-                Ok(loaded) => {
-                    self.source_name = Some(loaded.name);
-                    self.loaded_file_path = Some(loaded.path);
-                    self.loaded_file_kind = Some(loaded.kind);
-                    if !preserve || self.selected_columns.is_none() {
-                        self.selected_columns = Some(loaded.table.columns.iter().map(|c| c.name.clone()).collect());
-                        crate::devlog!("poll_loading: selected_columns reset to all ({})", self.selected_columns.as_ref().map(|s| s.len()).unwrap_or(0));
-                    } else if let (Some(sel), Some(table)) = (&mut self.selected_columns, Some(&loaded.table)) {
-                        // Keep saved selection, but drop columns that no longer exist in the source.
-                        let valid: std::collections::BTreeSet<String> = table.columns.iter().map(|c| c.name.clone()).collect();
-                        sel.retain(|c| valid.contains(c));
-                        if sel.is_empty() {
-                            *sel = valid;
+            self.data_model_resolving = false;
+            match f {
+                Finished::File(res) => match res {
+                    Ok(loaded) => {
+                        self.source_name = Some(loaded.name);
+                        self.loaded_file_path = Some(loaded.path);
+                        self.loaded_file_kind = Some(loaded.kind);
+                        if !preserve || self.selected_columns.is_none() {
+                            self.selected_columns = Some(loaded.table.columns.iter().map(|c| c.name.clone()).collect());
+                        } else if let (Some(sel), Some(table)) = (&mut self.selected_columns, Some(&loaded.table)) {
+                            let valid: std::collections::BTreeSet<String> = table.columns.iter().map(|c| c.name.clone()).collect();
+                            sel.retain(|c| valid.contains(c));
+                            if sel.is_empty() { *sel = valid; }
                         }
-                        crate::devlog!("poll_loading: preserved selected_columns count={}", sel.len());
+                        self.table = Some(loaded.table);
+                        self.db_source = None;
+                        for ws in &mut self.worksheets { ws.model = None; }
+                        self.on_home = false;
+                        self.on_source_page = !preserve;
+                        self.status = if preserve {
+                            format!("Workspace source loaded ({} rows, {} cols).", self.row_count(), self.col_count())
+                        } else {
+                            format!("Loaded '{}' ({} rows, {} cols). Review source columns, then open a worksheet.",
+                                self.source_name.as_deref().unwrap_or("data"), self.row_count(), self.col_count())
+                        };
                     }
-                    self.table = Some(loaded.table);
-                    self.db_source = None;
-                    for ws in &mut self.worksheets { ws.model = None; }
-                    self.on_home = false;
-                    self.on_source_page = !preserve;
-                    crate::devlog!("poll_loading: after preserve={} on_source_page={} sheets=[{}]", preserve, self.on_source_page, self.debug_sheet_summary());
-                    self.status = if preserve {
-                        format!("Workspace source loaded ({} rows, {} cols).", self.row_count(), self.col_count())
-                    } else {
-                        format!("Loaded '{}' ({} rows, {} cols). Review source columns, then open a worksheet.",
-                            self.source_name.as_deref().unwrap_or("data"), self.row_count(), self.col_count())
-                    };
-                }
-                Err(e) => { crate::devlog!("poll_loading: failed preserve={} err={e}", preserve); self.status = format!("Load failed: {e}"); }
+                    Err(e) => { self.status = format!("Load failed: {e}"); }
+                },
+                Finished::Model(res) => match res {
+                    Ok((mut table, diag)) => {
+                        table.source = Some("data-model".to_string());
+                        self.data_model_diagnostics = diag.clone();
+                        self.table = Some(table);
+                        self.db_source = None;
+                        self.source_name = Some("Data Model".to_string());
+                        for ws in &mut self.worksheets { ws.model = None; }
+                        self.on_home = false;
+                        self.sync_layout_pickers();
+                        let warns = diag.warnings.len();
+                        let errs = diag.errors.len();
+                        self.status = if errs > 0 {
+                            format!("Data model resolved with {errs} error(s), {warns} warning(s), {} row(s). Fix errors before relying on results.", self.row_count())
+                        } else {
+                            format!("Data model resolved: {} row(s), {} column(s), {warns} warning(s).", self.row_count(), self.col_count())
+                        };
+                        // Persist-stable identity: upgrade legacy worksheet refs to alias.column.
+                        self.canonicalize_spec_refs();
+                    }
+                    Err(e) => { self.data_model_diagnostics = ResolveDiagnostics::default(); self.status = format!("Data model resolve failed: {e}"); }
+                },
             }
             ctx.request_repaint();
         }
@@ -464,6 +553,14 @@ impl PivotApp {
         for (name, exts) in filters { dialog = dialog.add_filter(name, exts); }
         if let Some(path) = dialog.pick_file() { self.start_load(path, kind); }
         else { self.status = "Import cancelled.".to_string(); }
+    }
+
+    /// Add a dataset to the multi-source data model (Phase 2/5 MVP) without replacing the current resolved table.
+    pub fn pick_and_add_dataset(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().set_title("Add dataset (CSV/XLSX/DBF)")
+            .add_filter("Data", &["csv","tsv","txt","xlsx","xls","xlsm","dbf"]).pick_file() {
+            self.add_dataset_from_file(path);
+        }
     }
 
     #[allow(dead_code)]
@@ -574,13 +671,279 @@ impl PivotApp {
         self.status = "MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string();
     }
 
+    pub fn request_resolve_model(&mut self) {
+        if self.data_model_resolving { return; }
+        let enabled = self.data_model.datasets.iter().filter(|d| d.enabled && !matches!(d.source, WorkspaceSource::None)).count();
+        if enabled == 0 { self.status = "Add at least one dataset in Data Model.".to_string(); return; }
+        let model = self.data_model.clone();
+        let (tx, rx) = mpsc::channel::<LoadMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.data_model_resolving = true;
+        self.status = "Resolving data model (loading datasets/joins)...".to_string();
+        let cancel_flag = Arc::clone(&cancel);
+        thread::spawn(move || {
+            let res = resolve_model(&model, &DatasetLoadOptions::default(), Some(cancel_flag.as_ref()));
+            let _ = tx.send(LoadMsg::ModelDone(res.map(|r| (r.table, r.diagnostics)).map_err(|e| e.to_string())));
+        });
+        if let Some(load) = &self.loading { load.cancel.store(true, Ordering::Relaxed); }
+        self.loading = Some(LoadState { rx, progress: "Resolving data model...".into(), cancel, preserve_workspace: true });
+    }
+
+    pub fn add_dataset_from_file(&mut self, path: PathBuf) {
+        self.add_dataset_from_file_with_sheet(path, None);
+    }
+
+    /// True when the project already models datasets: importing another source then
+    /// enriches the data model instead of replacing the single legacy table.
+    pub fn import_adds_dataset(&self) -> bool {
+        !self.data_model.datasets.is_empty()
+    }
+
+    pub fn add_dataset_from_file_with_sheet(&mut self, path: PathBuf, sheet: Option<String>) {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let file_kind = match ext.as_str() { "tsv" => "tsv", "xlsx"|"xls"|"xlsm" => "xlsx", "dbf" => "dbf", _ => "csv" }.to_string();
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("dataset");
+        let alias = pivot_data::normalize::normalize_identifier(stem, 1);
+        let mut base = alias.clone(); let mut n=2u32;
+        while self.data_model.datasets.iter().any(|d| d.alias.eq_ignore_ascii_case(&base)) { base = format!("{alias}_{n}"); n+=1; }
+        let id = format!("ds{}", self.data_model.datasets.len() + 1);
+        self.data_model.datasets.push(Dataset::from_legacy_source(id, base.clone(), WorkspaceSource::File { path: path.to_string_lossy().to_string(), file_kind: Some(file_kind), sheet }));
+        if self.data_model.base_dataset_id.is_none() { self.data_model.base_dataset_id = self.data_model.datasets.first().map(|d| d.id.clone()); }
+        for ws in &mut self.worksheets { ws.model = None; }
+        self.status = format!("Added dataset '{base}'. Configure relations/columns, then Resolve Data Model.");
+        self.on_source_page = true;
+    }
+
+    pub fn add_dataset_sqlite(&mut self, path: PathBuf, table: String) {
+        let alias = pivot_data::normalize::normalize_identifier(&table, 1);
+        let mut base = alias.clone(); let mut n=2u32;
+        while self.data_model.datasets.iter().any(|d| d.alias.eq_ignore_ascii_case(&base)) { base = format!("{alias}_{n}"); n+=1; }
+        let id = format!("ds{}", self.data_model.datasets.len() + 1);
+        self.data_model.datasets.push(Dataset::from_legacy_source(id, base.clone(), WorkspaceSource::Sqlite { path: path.to_string_lossy().to_string(), table }));
+        if self.data_model.base_dataset_id.is_none() { self.data_model.base_dataset_id = self.data_model.datasets.first().map(|d| d.id.clone()); }
+        for ws in &mut self.worksheets { ws.model = None; }
+        self.status = format!("Added SQLite dataset '{base}'. Resolve Data Model to use it in pivots.");
+        self.on_source_page = true;
+    }
+
+    pub fn dataset_by_id(&self, id: &str) -> Option<&Dataset> {
+        self.data_model.datasets.iter().find(|d| d.id == id)
+    }
+
+    pub fn dataset_columns(&self, dataset_id: &str) -> &[String] {
+        self.dataset_schema_cache.get(dataset_id).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn load_dataset_schema(&mut self, dataset_id: &str) {
+        let Some(ds) = self.dataset_by_id(dataset_id).cloned() else {
+            self.status = format!("Dataset '{}' not found.", dataset_id);
+            return;
+        };
+        if let Some((pending, _)) = &self.preview_rx {
+            self.status = format!("A schema preview is already loading (dataset '{}').", pending);
+            return;
+        }
+        let (tx, rx) = mpsc::channel::<PreviewMsg>();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancel);
+        let id = dataset_id.to_string();
+        self.schema_loading_dataset = Some(id.clone());
+        self.preview_rx = Some((id, rx));
+        self.preview_cancel = Some(cancel);
+        self.status = format!("Loading schema preview for '{}'...", ds.alias);
+        thread::spawn(move || {
+            let opts = DatasetLoadOptions { row_limit: Some(200), preview_rows: 20, preview_only: true };
+            let res = pivot_data::preview_dataset_schema(&ds, &opts, Some(&cancel_flag))
+                .map(Box::new).map_err(|e| e.to_string());
+            let _ = tx.send(PreviewMsg::Done(res));
+        });
+    }
+
+    /// Drain the async schema preview result (UI thread).
+    pub fn poll_preview(&mut self, ctx: &egui::Context) {
+        let Some((dataset_id, rx)) = self.preview_rx.as_ref() else { return };
+        let Ok(PreviewMsg::Done(res)) = rx.try_recv() else { return };
+        let dataset_id = dataset_id.clone();
+        self.preview_rx = None;
+        self.preview_cancel = None;
+        self.schema_loading_dataset = None;
+        match res {
+            Ok(preview) => {
+                let preview = *preview;
+                let cols = preview.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+                let note = if preview.capped { format!(" (capped at {} rows)", preview.row_count) } else { String::new() };
+                let truncated = if preview.truncated { ", preview rows truncated" } else { "" };
+                self.status = format!("Loaded {} column(s) for dataset '{}'{note}{truncated}.", preview.columns.len(), preview.alias);
+                self.dataset_schema_cache.insert(dataset_id.clone(), cols);
+                self.dataset_preview_cache.insert(dataset_id, preview);
+                self.ensure_rel_draft_defaults();
+            }
+            Err(e) => { self.status = format!("Failed to load schema preview: {e}"); }
+        }
+        ctx.request_repaint();
+    }
+
+    pub fn cancel_preview(&mut self) {
+        if let Some(c) = &self.preview_cancel { c.store(true, Ordering::Relaxed); }
+        self.preview_cancel = None;
+        self.preview_rx = None;
+        self.schema_loading_dataset = None;
+        self.status = "Schema preview cancelled.".to_string();
+    }
+
+    /// Migrate persisted worksheet field refs onto the resolved model's canonical
+    /// identity (`alias.column`) so specs keep working after datasets are renamed or
+    /// reordered. Refs that do not resolve are left untouched (stale detection reports
+    /// them). Only applies to multi-source models; legacy single-source specs are
+    /// preserved as-is for v1/v2 parity.
+    pub fn canonicalize_spec_refs(&mut self) -> usize {
+        if !self.uses_multi_source_model() { return 0; }
+        let Some(table) = self.table.clone() else { return 0; };
+        let mut changed = 0usize;
+        let fix = |name: &mut String, changed: &mut usize| {
+            if let Some(canon) = pivot_core::pivot::canonical_field_name(&table, name) {
+                if canon != *name { *name = canon; *changed += 1; }
+            }
+        };
+        for ws in &mut self.worksheets {
+            for f in &mut ws.spec.rows { fix(&mut f.name, &mut changed); }
+            for f in &mut ws.spec.columns { fix(&mut f.name, &mut changed); }
+            for v in &mut ws.spec.values { fix(&mut v.field.name, &mut changed); }
+            for f in &mut ws.spec.filters { fix(&mut f.field.name, &mut changed); }
+        }
+        if changed > 0 {
+            self.status = format!("Migrated {changed} worksheet field reference(s) to resolved identity (alias.column).");
+        }
+        changed
+    }
+
+    pub fn ensure_rel_draft_defaults(&mut self) {
+        let ids = self.data_model.datasets.iter().map(|d| d.id.clone()).collect::<Vec<_>>();
+        if ids.is_empty() {
+            self.rel_base_dataset.clear(); self.rel_base_column.clear();
+            self.rel_lookup_dataset.clear(); self.rel_lookup_column.clear();
+            self.rel_label_columns.clear();
+            return;
+        }
+        let base_default = self.data_model.base_dataset_id.clone().filter(|id| ids.contains(id)).unwrap_or_else(|| ids[0].clone());
+        if self.rel_base_dataset.is_empty() || !ids.contains(&self.rel_base_dataset) { self.rel_base_dataset = base_default; }
+        if self.rel_lookup_dataset.is_empty() || !ids.contains(&self.rel_lookup_dataset) || self.rel_lookup_dataset == self.rel_base_dataset {
+            if let Some(other) = ids.iter().find(|id| **id != self.rel_base_dataset) { self.rel_lookup_dataset = other.clone(); }
+            else { self.rel_lookup_dataset = self.rel_base_dataset.clone(); }
+        }
+        let base_cols = self.dataset_columns(&self.rel_base_dataset).to_vec();
+        if !base_cols.is_empty() && (self.rel_base_column.is_empty() || !base_cols.iter().any(|c| c == &self.rel_base_column)) {
+            self.rel_base_column = base_cols[0].clone();
+        }
+        let lookup_cols = self.dataset_columns(&self.rel_lookup_dataset).to_vec();
+        if !lookup_cols.is_empty() && (self.rel_lookup_column.is_empty() || !lookup_cols.iter().any(|c| c == &self.rel_lookup_column)) {
+            self.rel_lookup_column = lookup_cols[0].clone();
+        }
+        self.rel_label_columns.retain(|c| lookup_cols.is_empty() || lookup_cols.iter().any(|x| x == c));
+    }
+
+
+    pub fn clear_relation_draft(&mut self) {
+        self.rel_edit_id = None;
+        self.rel_name.clear();
+        self.rel_base_column.clear();
+        self.rel_lookup_column.clear();
+        self.rel_label_columns.clear();
+        self.rel_message = None;
+        self.ensure_rel_draft_defaults();
+    }
+
+    pub fn save_relation_from_draft(&mut self) {
+        self.ensure_rel_draft_defaults();
+        if self.rel_base_dataset.is_empty() || self.rel_lookup_dataset.is_empty() {
+            self.rel_message = Some("Select base and lookup datasets.".to_string()); return;
+        }
+        if self.rel_base_dataset == self.rel_lookup_dataset {
+            self.rel_message = Some("Base and lookup datasets must be different.".to_string()); return;
+        }
+        if self.rel_base_column.trim().is_empty() || self.rel_lookup_column.trim().is_empty() {
+            self.rel_message = Some("Select base key and lookup key columns (load dataset columns first).".to_string()); return;
+        }
+        let valid_labels: Vec<String> = self.rel_label_columns.iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != self.rel_lookup_column.trim())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if valid_labels.is_empty() && !self.dataset_columns(&self.rel_lookup_dataset).is_empty() {
+            self.rel_message = Some("Select at least one lookup label column (non-key).".to_string()); return;
+        }
+        {
+            let loaded = self.dataset_columns(&self.rel_lookup_dataset);
+            if !loaded.is_empty() {
+                let missing = valid_labels.iter().find(|c| !loaded.iter().any(|x| x == *c));
+                if let Some(m) = missing {
+                    let lookup_alias2 = self.dataset_by_id(&self.rel_lookup_dataset).map(|d| d.alias.clone()).unwrap_or_else(|| self.rel_lookup_dataset.clone());
+                    self.rel_message = Some(format!("Lookup label column '{}' not found in loaded columns for '{}'.", m, lookup_alias2)); return;
+                }
+            }
+        }
+        let base_alias = self.dataset_by_id(&self.rel_base_dataset).map(|d| d.alias.clone()).unwrap_or_else(|| self.rel_base_dataset.clone());
+        let lookup_alias = self.dataset_by_id(&self.rel_lookup_dataset).map(|d| d.alias.clone()).unwrap_or_else(|| self.rel_lookup_dataset.clone());
+        let rel = Relation {
+            id: self.rel_edit_id.clone().unwrap_or_else(|| format!("rel{}", self.data_model.relations.len() + 1 + (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() % 10000).unwrap_or(0)) as usize)),
+            name: if self.rel_name.trim().is_empty() { Some(format!("{base_alias}->{lookup_alias}")) } else { Some(self.rel_name.trim().to_string()) },
+            left_dataset_id: self.rel_base_dataset.clone(),
+            left_column: self.rel_base_column.trim().to_string(),
+            right_dataset_id: self.rel_lookup_dataset.clone(),
+            right_column: self.rel_lookup_column.trim().to_string(),
+            join_type: JoinType::Lookup,
+            label_columns: if valid_labels.is_empty() { None } else {
+                let mut v = valid_labels.clone();
+                v.sort();
+                v.dedup();
+                Some(v)
+            },
+            enabled: true,
+        };
+        // simple validation against loaded schema when available
+        let base_cols = self.dataset_columns(&rel.left_dataset_id);
+        if !base_cols.is_empty() && !base_cols.iter().any(|c| c == &rel.left_column) {
+            self.rel_message = Some(format!("Base key '{}' not found in loaded columns for '{}'.", rel.left_column, base_alias)); return;
+        }
+        let lookup_cols = self.dataset_columns(&rel.right_dataset_id);
+        if !lookup_cols.is_empty() && !lookup_cols.iter().any(|c| c == &rel.right_column) {
+            self.rel_message = Some(format!("Lookup key '{}' not found in loaded columns for '{}'.", rel.right_column, lookup_alias)); return;
+        }
+        if let Some(existing) = self.rel_edit_id.as_ref() {
+            if let Some(slot) = self.data_model.relations.iter_mut().find(|r| &r.id == existing) { *slot = rel.clone(); }
+        } else {
+            self.data_model.relations.push(rel.clone());
+        }
+        for ws in &mut self.worksheets { ws.model = None; }
+        self.table = None;
+        self.rel_message = Some(format!("Saved lookup relation {}. Resolve Data Model to validate/apply (duplicate lookup keys are rejected; base row count is preserved).", rel.name.as_deref().unwrap_or(&rel.id)));
+        self.status = "Relation saved. Resolve Data Model to apply it.".to_string();
+        self.clear_relation_draft();
+        // keep selection convenience
+        self.rel_base_dataset = rel.left_dataset_id;
+        self.rel_lookup_dataset = rel.right_dataset_id;
+        self.ensure_rel_draft_defaults();
+    }
+
+    pub fn remove_relation(&mut self, rel_id: &str) {
+        let before = self.data_model.relations.len();
+        self.data_model.relations.retain(|r| r.id != rel_id);
+        if self.data_model.relations.len() != before {
+            for ws in &mut self.worksheets { ws.model = None; }
+            self.table = None;
+            if self.rel_edit_id.as_deref() == Some(rel_id) { self.clear_relation_draft(); }
+            self.status = "Relation removed. Resolve Data Model to refresh results.".to_string();
+        }
+    }
+
     pub fn request_pivot_recompute(&mut self) {
         let sheet_id = self.active_sheet().id.clone();
         let spec = self.active_spec().clone();
         crate::devlog!("request_pivot_recompute: active={} sheet_id={} r{}c{}v{}f{} sheets=[{}]",
             self.active_worksheet, sheet_id, spec.rows.len(), spec.columns.len(), spec.values.len(), spec.filters.len(), self.debug_sheet_summary());
         if self.table.is_none() && self.db_source.is_none() {
-            self.status = "Load data before computing a pivot.".to_string(); return;
+            self.status = "Load data before computing a pivot. (For multi-source projects, resolve the data model first.)".to_string(); return;
         }
         if self.pivot_computing.is_some() {
             self.status = "Pivot computation already in progress.".to_string(); return;
@@ -868,11 +1231,22 @@ impl PivotApp {
                 DbSource::MySql(profile) => WorkspaceSource::MySql { profile: profile.sanitized_for_storage() },
             }
         } else if let Some(path) = &self.loaded_file_path {
-            WorkspaceSource::File { path: path.to_string_lossy().to_string(), file_kind: self.loaded_file_kind.map(Self::file_kind_name).map(str::to_string) }
+            WorkspaceSource::File { path: path.to_string_lossy().to_string(), file_kind: self.loaded_file_kind.map(Self::file_kind_name).map(str::to_string), sheet: None }
         } else { WorkspaceSource::None }
     }
 
     fn build_workspace_file(&self) -> WorkspaceFile {
+        let source = self.workspace_source();
+        let selected_columns = self.selected_columns.as_ref().map(|s| s.iter().cloned().collect());
+        // Preserve an explicitly modeled multi-source project; otherwise keep the
+        // legacy bridge coherent with the current single-source UI state.
+        let data_model = if self.data_model.datasets.len() > 1 || !self.data_model.relations.is_empty() {
+            let mut dm = self.data_model.clone();
+            if dm.base_dataset_id.is_none() && !dm.datasets.is_empty() { dm.base_dataset_id = Some(dm.datasets[0].id.clone()); }
+            dm.sanitized()
+        } else {
+            pivot_data::ProjectDataModel::from_legacy(source.clone(), selected_columns.clone())
+        };
         WorkspaceFile {
             manifest: pivot_data::WorkspaceManifest::default(),
             worksheets: self.worksheets.iter().map(|w| WorkspaceWorksheet { id: w.id.clone(), name: w.name.clone(), number: w.number, spec: w.spec.clone(), view: WorksheetView::default() }).collect(),
@@ -883,8 +1257,9 @@ impl PivotApp {
                 border_theme_id: Some(self.table_border_theme.id().to_string()),
                 on_home: self.on_home,
             },
-            source: self.workspace_source(),
-            selected_columns: self.selected_columns.as_ref().map(|s| s.iter().cloned().collect()),
+            source,
+            selected_columns,
+            data_model,
         }
     }
 
@@ -896,6 +1271,21 @@ impl PivotApp {
         self.db_source = None;
         self.pivot_computing = None;
         self.selected_columns = None;
+        self.data_model = ProjectDataModel::default();
+        self.data_model_diagnostics = ResolveDiagnostics::default();
+        self.data_model_resolving = false;
+        self.dataset_schema_cache.clear();
+        self.dataset_preview_cache.clear();
+        self.projection_message = None;
+        self.schema_loading_dataset = None;
+        self.rel_edit_id = None;
+        self.rel_base_dataset.clear();
+        self.rel_base_column.clear();
+        self.rel_lookup_dataset.clear();
+        self.rel_lookup_column.clear();
+        self.rel_label_columns.clear();
+        self.rel_name.clear();
+        self.rel_message = None;
         self.worksheets = vec![WorksheetState::new("sheet-1".to_string(), WorksheetState::default_name(1), 1, default_spec())];
         self.active_worksheet = 0;
         self.next_sheet_no = 2;
@@ -956,26 +1346,40 @@ impl PivotApp {
         self.active_worksheet = ws.active_worksheet.min(self.worksheets.len().saturating_sub(1));
         self.next_sheet_no = self.worksheets.iter().map(|w| w.number).max().unwrap_or(self.worksheets.len()) + 1;
         self.selected_columns = ws.selected_columns.map(|v| v.into_iter().collect());
+        self.data_model = ws.data_model;
+        self.dataset_schema_cache.clear();
+        self.dataset_preview_cache.clear();
+        self.projection_message = None;
         if let Some(id) = ws.view.brightness_id.as_deref() { if let Some(b) = Brightness::parse(id) { self.brightness = b; } }
         if ws.view.border_theme_id.is_some() || ws.view.table_theme_id.is_some() {
             let (cid, bid) = ws.view.resolved_theme_ids();
             if let Some(t) = TableColorThemeId::parse(&cid) { self.table_color_theme = t; }
             if let Some(b) = BorderThemeId::parse(&bid) { self.table_border_theme = b; }
         }
-        // Restore worksheet setup first. Prefer showing worksheets (setup is preserved)
-        // rather than home/source, especially while async source reload is pending.
         self.on_home = false;
         self.on_source_page = false;
         self.table = None; self.source_name = None; self.loaded_file_path = None; self.loaded_file_kind = None;
         self.db_source = None;
         self.sync_layout_pickers();
         crate::devlog!("open_workspace: restored sheets=[{}] active={}", self.debug_sheet_summary(), self.active_worksheet);
+
+        // Multi-source v3 workspace: resolve data model (datasets + relations) instead of legacy single-source reload.
+        let multi = self.data_model.datasets.iter().filter(|d| d.enabled).count() > 1 || !self.data_model.relations.is_empty();
+        if multi {
+            self.on_source_page = false;
+            self.status = format!("Workspace opened: {}. Resolving multi-source data model...", path.display());
+            self.request_resolve_model();
+            crate::devlog!("open_workspace: final (multi-source resolve queued) on_home={} on_source_page={} active={} sheets=[{}]",
+                self.on_home, self.on_source_page, self.active_worksheet, self.debug_sheet_summary());
+            return;
+        }
+
         match ws.source {
             WorkspaceSource::None => {
                 self.on_home = ws.view.on_home && self.worksheets.iter().all(|w| w.spec.rows.is_empty() && w.spec.columns.is_empty() && w.spec.values.is_empty() && w.spec.filters.is_empty());
                 self.status = format!("Workspace opened: {} (no data source).", path.display());
             }
-            WorkspaceSource::File { path: sp, file_kind } => {
+            WorkspaceSource::File { path: sp, file_kind, .. } => {
                 let sp = PathBuf::from(sp);
                 let kind = Self::file_kind_from_name(file_kind.as_deref()).unwrap_or_else(|| match sp.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
                     "tsv" => FileKind::Tsv, "xlsx"|"xls"|"xlsm" => FileKind::Xlsx, "dbf" => FileKind::Dbf, _ => FileKind::Csv,
@@ -1017,6 +1421,8 @@ impl PivotApp {
                 self.status = "Workspace has a MySQL source, but MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string();
             }
         }
+        crate::devlog!("open_workspace: final on_home={} on_source_page={} has_table={} active={} sheets=[{}]",
+            self.on_home, self.on_source_page, self.table.is_some(), self.active_worksheet, self.debug_sheet_summary());
         crate::devlog!("open_workspace: final on_home={} on_source_page={} has_table={} active={} sheets=[{}]",
             self.on_home, self.on_source_page, self.table.is_some(), self.active_worksheet, self.debug_sheet_summary());
     }
@@ -1088,14 +1494,25 @@ impl PivotApp {
                 self.status = if let Some(name) = &self.source_name { format!("Worksheet '{}' - {name} ({} rows, {} cols).", self.active_sheet().name, self.row_count(), self.col_count()) }
                 else { "Worksheet - import data to populate fields.".to_string() };
             }
-            "file.import" | "file.import.csv" => self.pick_and_load(FileKind::Csv),
-            "file.import.xlsx" => self.pick_and_load(FileKind::Xlsx),
-            "file.import.dbf" => self.pick_and_load(FileKind::Dbf),
+            "file.import" | "file.import.csv" => {
+                if self.import_adds_dataset() { self.on_home = false; self.on_source_page = true; self.pick_and_add_dataset(); }
+                else { self.pick_and_load(FileKind::Csv) }
+            }
+            "file.import.xlsx" => {
+                if self.import_adds_dataset() { self.on_home = false; self.on_source_page = true; self.pick_and_add_dataset(); }
+                else { self.pick_and_load(FileKind::Xlsx) }
+            }
+            "file.import.dbf" => {
+                if self.import_adds_dataset() { self.on_home = false; self.on_source_page = true; self.pick_and_add_dataset(); }
+                else { self.pick_and_load(FileKind::Dbf) }
+            }
             "file.new" => self.new_workspace(),
             "file.open" => self.open_workspace(),
             "file.save" => self.save_workspace(false),
             "file.save_as" => self.save_workspace(true),
             "data.connect" => { self.on_home = false; self.on_source_page = false; self.db_panel_open = true; self.db_tab_mysql = false; self.status = "Database: connect to SQLite (pushdown). CSV, XLSX, DBF, SQLite supported; MySQL temporarily disabled.".to_string(); }
+            "data.resolve_model" => { self.on_home = false; self.on_source_page = true; self.request_resolve_model(); }
+            "data.add_dataset" => { self.on_home = false; self.on_source_page = true; self.pick_and_add_dataset(); }
             "file.export" => { let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string(); self.export_pivot(&format); }
             "data.cancel_load" => { self.cancel_load(); self.cancel_export(); self.cancel_pivot(); }
             "pivot.recompute" => self.request_pivot_recompute(),
@@ -1117,7 +1534,7 @@ impl PivotApp {
             "format.color_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = TableColorThemeId::parse(id) { self.table_color_theme = theme; self.status = format!("Color theme set to {}.", theme.label()); } } }
             "format.border_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = BorderThemeId::parse(id) { self.table_border_theme = theme; self.status = format!("Border theme set to {}.", theme.label()); } } }
             "view.reset_layout" => { self.status = "Layout reset (placeholder).".to_string(); }
-            "help.about" => { self.status = "Pivot Studio v0.2.1 - polished pivot tables (CSV/XLSX/DBF/SQLite), source column selection, multi-worksheet projects, themes, export, .pivot workspace. Recompute between sheets as needed; PDF exports the active sheet.".to_string(); }
+            "help.about" => { self.status = "Pivot Studio v0.2.1 - polished pivot tables (CSV/XLSX/DBF/SQLite), multi-source data model with column relations (MVP), multi-worksheet projects, themes, export, .pivot workspace v3. Recompute between sheets as needed; PDF exports the active sheet.".to_string(); }
             _ => { self.status = format!("Command '{id}' is a placeholder."); }
         }
     }
@@ -1161,9 +1578,10 @@ impl eframe::App for PivotApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure_theme(ctx);
         self.poll_loading(ctx);
+        self.poll_preview(ctx);
         self.poll_pivot(ctx);
         self.poll_export(ctx);
-        if self.loading.is_some() || self.pivot_computing.is_some() || self.exporting.is_some() {
+        if self.loading.is_some() || self.preview_rx.is_some() || self.pivot_computing.is_some() || self.exporting.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
         if self.exit_requested { ctx.send_viewport_cmd(egui::ViewportCommand::Close); self.exit_requested = false; }
@@ -1174,3 +1592,4 @@ impl eframe::App for PivotApp {
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas)).show(ctx, |ui| { dock::show(self, ui); });
     }
 }
+
