@@ -52,4 +52,8 @@ pub fn load_file(path: &Path, kind: FileKind) -> Result<DataTable> {
 }
 
 pub use db_import::{connect_and_preview_sqlite, execute_pivot_mysql, execute_pivot_sqlite, list_sqlite_tables, preview_mysql, store_secret, CredentialMode, DbProfile, DbTableRef, MySqlProfile, SqliteProfile};
-pub use workspace::{load_workspace, save_workspace, WorkspaceFile, WorkspaceManifest, WorkspaceSource, WorkspaceView, FORMAT_VERSION, WORKSPACE_EXT};
+pub use workspace::{
+    load_workspace, save_workspace, sanitize_filename, suggested_workspace_path, WorksheetView,
+    WorkspaceFile, WorkspaceManifest, WorkspaceProject, WorkspaceSource, WorkspaceView,
+    WorkspaceWorksheet, FORMAT_VERSION, WORKSPACE_EXT, WORKSHEETS_NAME, PROJECT_NAME,
+};

@@ -53,9 +53,8 @@ fn model_key(model: &ThemedTableModel) -> u64 {
 fn default_widths(model: &ThemedTableModel) -> Vec<f32> {
     let n = model.total_columns().max(1);
     let mut w = vec![110.0; n];
-    for i in 0..model.row_header_cols.min(n) {
-        w[i] = 140.0;
-    }
+    let header_cols = model.row_header_cols.min(n);
+    w[..header_cols].fill(140.0);
     w
 }
 
@@ -183,9 +182,9 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_width
             if ci >= cols { break; }
             let cs = cell.colspan.max(1).min(cols.saturating_sub(ci));
             let rs = cell.rowspan.max(1).min(rows.saturating_sub(ri));
-            for r in ri..ri + rs {
-                for c in ci..ci + cs {
-                    if r < rows && c < cols { occupied[r][c] = true; }
+            for row_occ in occupied.iter_mut().take((ri + rs).min(rows)).skip(ri) {
+                for occ in row_occ.iter_mut().take((ci + cs).min(cols)).skip(ci) {
+                    *occ = true;
                 }
             }
             let x0 = rect.min.x + col_x(col_widths, ci) - x_offset;
@@ -214,14 +213,17 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_width
 
 fn handle_resize(ui: &Ui, col_widths: &mut [f32], header_rect: Rect, x_offset: f32, col_count: usize) {
     let mut x = header_rect.min.x - x_offset;
-    for i in 0..col_count {
-        x += col_widths[i];
-        let hit = Rect::from_center_size(Pos2::new(x, header_rect.center().y), Vec2::new(RESIZE_HIT * 2.0, header_rect.height()));
+    for (i, width) in col_widths.iter_mut().enumerate().take(col_count) {
+        x += *width;
+        let hit = Rect::from_center_size(
+            Pos2::new(x, header_rect.center().y),
+            Vec2::new(RESIZE_HIT * 2.0, header_rect.height()),
+        );
         let id = ui.id().with(("col_resize", i));
         let resp = ui.interact(hit, id, Sense::drag());
         if resp.dragged() {
             let delta = resp.drag_delta().x;
-            col_widths[i] = (col_widths[i] + delta).max(MIN_COL_W);
+            *width = (*width + delta).max(MIN_COL_W);
         }
         if resp.hovered() || resp.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
@@ -256,8 +258,7 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
         }
     }
     // footers
-    let mut fi = 0usize;
-    for band in &model.footer_bands {
+    for (fi, band) in model.footer_bands.iter().enumerate() {
         let y0 = rect.min.y + model.body_rows.len() as f32 * row_h + fi as f32 * row_h;
         let mut ci = 0usize;
         let total_w: f32 = state.col_widths.iter().sum();
@@ -289,7 +290,6 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
                 ci += cs;
             }
         }
-        fi += 1;
     }
 }
 
@@ -347,7 +347,7 @@ fn role_style_for(style: &TableStyle, role: CellRole, zebra: bool) -> pivot_them
 fn truncate(s: &str, max: usize) -> String {
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
-        if i >= max { out.push('…'); break; }
+        if i >= max { out.push('�'); break; }
         out.push(ch);
     }
     out
@@ -390,7 +390,7 @@ fn flattened_rows(model: &ThemedTableModel) -> Vec<Vec<String>> {
 }
 
 fn to_tsv(rows: &[Vec<String>]) -> String {
-    rows.iter().map(|r| r.iter().map(|c| c.replace('\t', " ").replace('\n', " ")).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n")
+    rows.iter().map(|r| r.iter().map(|c| c.replace(['\t', '\n'], " ")).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n")
 }
 
 fn copy_all(ctx: &egui::Context, model: &ThemedTableModel) {
@@ -404,10 +404,8 @@ fn copy_selection(ctx: &egui::Context, model: &ThemedTableModel, state: &GridUiS
     let mut out = Vec::new();
     for r in r0..=r1.min(rows.len().saturating_sub(1)) {
         if let Some(row) = rows.get(r) {
-            let mut line = Vec::new();
-            for c in c0..=c1.min(row.len().saturating_sub(1)) {
-                line.push(row[c].clone());
-            }
+            let end = c1.min(row.len().saturating_sub(1));
+            let line = row[c0..=end].to_vec();
             out.push(line);
         }
     }

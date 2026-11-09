@@ -2,15 +2,60 @@ use crate::{ExportError, ExportStyle, Result};
 use pivot_core::{Cell, CellRole, FooterBandKind, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 use rust_xlsxwriter::{Color, Format, FormatAlign, FormatBorder, Workbook, Worksheet};
+use std::collections::HashSet;
 use std::path::Path;
 
 pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Result<()> {
+    write_sheets(path, &[("Pivot", model)], style)
+}
+
+pub fn write_sheets(path: &Path, sheets: &[(&str, &ThemedTableModel)], style: ExportStyle) -> Result<()> {
+    if sheets.is_empty() {
+        return Err(ExportError::Empty);
+    }
     let ts = style.resolve();
     let mut wb = Workbook::new();
-    let ws = wb.add_worksheet();
-    ws.set_name("Pivot")
-        .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+    let names = sanitize_sheet_names(sheets.iter().map(|(n, _)| *n));
+    for ((_, model), name) in sheets.iter().zip(names.iter()) {
+        let ws = wb.add_worksheet();
+        ws.set_name(name).map_err(|e| ExportError::Xlsx(format!("{name}: {e}")))?;
+        write_model_sheet(ws, model, &ts)?;
+    }
+    wb.save(path).map_err(|e| ExportError::Xlsx(e.to_string()))?;
+    Ok(())
+}
 
+pub fn sanitize_sheet_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut used: HashSet<String> = HashSet::new();
+    let mut out = Vec::new();
+    for (i, raw) in names.into_iter().enumerate() {
+        let mut base: String = raw
+            .chars()
+            .map(|c| if matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\') { '_' } else { c })
+            .collect();
+        base = base.trim().trim_matches('\'').to_string();
+        if base.is_empty() { base = format!("Sheet {}", i + 1); }
+        let mut chars: Vec<char> = base.chars().collect();
+        if chars.len() > 31 { chars.truncate(31); base = chars.into_iter().collect(); base = base.trim_end().to_string(); }
+        if base.is_empty() { base = format!("Sheet {}", i + 1); }
+        let mut candidate = base.clone();
+        let mut n = 2usize;
+        while used.contains(&candidate.to_ascii_lowercase()) {
+            let suffix = format!(" ({n})");
+            let mut keep = base.clone();
+            let max = 31usize.saturating_sub(suffix.chars().count());
+            let mut kc: Vec<char> = keep.chars().collect();
+            if kc.len() > max { kc.truncate(max); keep = kc.into_iter().collect(); }
+            candidate = format!("{keep}{suffix}");
+            n += 1;
+        }
+        used.insert(candidate.to_ascii_lowercase());
+        out.push(candidate);
+    }
+    out
+}
+
+fn write_model_sheet(ws: &mut Worksheet, model: &ThemedTableModel, ts: &TableStyle) -> Result<()> {
     let cols = model.total_columns().max(1) as u16;
     // Column widths
     for c in 0..cols {
@@ -40,7 +85,8 @@ pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Resul
         let total_cols = cols as usize;
         let mut occupied = vec![vec![false; total_cols]; model.header_rows.len()];
         for (ri, hrow) in model.header_rows.iter().enumerate() {
-            write_row_with_occupancy(ws, row, hrow, &ts, false, 20.0, ri, &mut occupied, total_cols)?;
+            let mut occ = RowOccupancy { occupied: &mut occupied, row_idx: ri, total_cols };
+            write_row_with_occupancy(ws, row, hrow, ts, false, 20.0, &mut occ)?;
             row += 1;
         }
     }
@@ -48,14 +94,14 @@ pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Resul
     // Body rows
     for (ri, brow) in model.body_rows.iter().enumerate() {
         let zebra = ri % 2 == 1;
-        write_row(ws, row, brow, &ts, zebra, 18.0)?;
+        write_row(ws, row, brow, ts, zebra, 18.0)?;
         row += 1;
     }
 
     // Footer bands
     for band in &model.footer_bands {
         let _ = band_kind_name(band.kind);
-        write_row(ws, row, &band.cells, &ts, false, 18.0)?;
+        write_row(ws, row, &band.cells, ts, false, 18.0)?;
         row += 1;
     }
 
@@ -63,9 +109,6 @@ pub fn write(path: &Path, model: &ThemedTableModel, style: ExportStyle) -> Resul
     let freeze_rows = 1 + model.header_rows.len() as u32;
     ws.set_freeze_panes(freeze_rows, model.row_header_cols as u16)
         .ok();
-
-    wb.save(path)
-        .map_err(|e| ExportError::Xlsx(e.to_string()))?;
     Ok(())
 }
 
@@ -156,6 +199,85 @@ fn band_kind_name(kind: FooterBandKind) -> &'static str {
     }
 }
 
+struct RowOccupancy<'a> {
+    occupied: &'a mut [Vec<bool>],
+    row_idx: usize,
+    total_cols: usize,
+}
+
+fn write_row_with_occupancy(
+    ws: &mut Worksheet,
+    row: u32,
+    cells: &[Cell],
+    ts: &TableStyle,
+    zebra: bool,
+    height: f64,
+    occ: &mut RowOccupancy<'_>,
+) -> Result<()> {
+    ws.set_row_height(row, height).ok();
+    let mut col: u16 = 0;
+    for cell in cells {
+        while (col as usize) < occ.total_cols
+            && occ
+                .occupied
+                .get(occ.row_idx)
+                .and_then(|r| r.get(col as usize))
+                .copied()
+                .unwrap_or(false)
+        {
+            col += 1;
+        }
+        let rs = cell_role_style(cell.role, ts, zebra);
+        let align = if is_value_role(cell.role) && looks_numeric(&cell.text) {
+            FormatAlign::Right
+        } else {
+            FormatAlign::Left
+        };
+        let mut fmt = make_format(&rs, align, rs.strong);
+        if cell.indent > 0 {
+            fmt = fmt.set_indent(cell.indent.min(8) as u8);
+        }
+        let cspan = cell.colspan.max(1) as u16;
+        let rspan = cell.rowspan.max(1) as u32;
+        // mark occupancy for rowspan
+        for dr in 0..(rspan as usize) {
+            let rr = occ.row_idx + dr;
+            if rr >= occ.occupied.len() {
+                continue;
+            }
+            for dc in 0..(cspan as usize) {
+                let cc = (col as usize) + dc;
+                if cc < occ.total_cols {
+                    occ.occupied[rr][cc] = true;
+                }
+            }
+        }
+        if cspan > 1 || rspan > 1 {
+            let end_col = col + cspan - 1;
+            let end_row = row + rspan - 1;
+            if rspan == 1 && cspan > 1 && col > 0 && cell.text.is_empty() {
+                ws.merge_range(row, col, end_row, end_col, "", &fmt)
+                    .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            } else if looks_numeric(&cell.text) && is_value_role(cell.role) && rspan == 1 && cspan == 1 {
+                ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt)
+                    .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            } else {
+                ws.merge_range(row, col, end_row, end_col, &cell.text, &fmt)
+                    .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+            }
+        } else if looks_numeric(&cell.text) && is_value_role(cell.role) {
+            ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt)
+                .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+        } else {
+            ws.write_string_with_format(row, col, &cell.text, &fmt)
+                .map_err(|e| ExportError::Xlsx(e.to_string()))?;
+        }
+        col += cspan;
+    }
+    let _ = zebra;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,58 +292,4 @@ mod tests {
         let meta = std::fs::metadata(&path).unwrap();
         assert!(meta.len() > 1000, "xlsx too small: {}", meta.len());
     }
-}
-
-fn write_row_with_occupancy(
-    ws: &mut Worksheet,
-    row: u32,
-    cells: &[Cell],
-    ts: &TableStyle,
-    zebra: bool,
-    height: f64,
-    row_idx: usize,
-    occupied: &mut [Vec<bool>],
-    total_cols: usize,
-) -> Result<()> {
-    ws.set_row_height(row, height).ok();
-    let mut col: u16 = 0;
-    for cell in cells {
-        while (col as usize) < total_cols && occupied.get(row_idx).and_then(|r| r.get(col as usize)).copied().unwrap_or(false) {
-            col += 1;
-        }
-        let rs = cell_role_style(cell.role, ts, zebra);
-        let align = if is_value_role(cell.role) && looks_numeric(&cell.text) { FormatAlign::Right } else { FormatAlign::Left };
-        let mut fmt = make_format(&rs, align, rs.strong);
-        if cell.indent > 0 { fmt = fmt.set_indent(cell.indent.min(8) as u8); }
-        let cspan = cell.colspan.max(1) as u16;
-        let rspan = cell.rowspan.max(1) as u32;
-        // mark occupancy for rowspan
-        for dr in 0..(rspan as usize) {
-            let rr = row_idx + dr;
-            if rr >= occupied.len() { continue; }
-            for dc in 0..(cspan as usize) {
-                let cc = (col as usize) + dc;
-                if cc < total_cols { occupied[rr][cc] = true; }
-            }
-        }
-        if cspan > 1 || rspan > 1 {
-            let end_col = col + cspan - 1;
-            let end_row = row + rspan - 1;
-            if rspan == 1 && cspan > 1 && col > 0 && cell.text.is_empty() {
-                ws.merge_range(row, col, end_row, end_col, "", &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
-            } else if looks_numeric(&cell.text) && is_value_role(cell.role) && rspan == 1 && cspan == 1 {
-                ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
-            } else {
-                ws.merge_range(row, col, end_row, end_col, &cell.text, &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
-            }
-        } else if looks_numeric(&cell.text) && is_value_role(cell.role) {
-            ws.write_number_with_format(row, col, parse_number(&cell.text).unwrap_or(0.0), &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
-        } else {
-            ws.write_string_with_format(row, col, &cell.text, &fmt).map_err(|e| ExportError::Xlsx(e.to_string()))?;
-        }
-        col += cspan;
-    }
-    // fill any remaining occupied-origin gaps? cells are dense; no-op
-    let _ = (zebra, row_idx);
-    Ok(())
 }

@@ -425,8 +425,8 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                     FooterBandKind::GrandTotal => CellRole::GrandTotal,
                     _ => CellRole::Footer,
                 };
-                frow.push(Cell::new(band_spec.effective_label_lang(lang), role.clone()));
-                for _ in 1..row_header_cols { frow.push(Cell::new("", role.clone())); }
+                frow.push(Cell::new(band_spec.effective_label_lang(lang), role));
+                for _ in 1..row_header_cols { frow.push(Cell::new("", role)); }
                 if spec.columns.is_empty() {
                     for (vi, (ci, vf)) in value_fields.iter().enumerate() {
                         if matches!(band_spec.kind, FooterBandKind::Average) && band_spec.field.is_none() {
@@ -440,7 +440,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                                 }
                             }
                             let text = if n > 0 { format_number(sum / n as f64, band_spec.decimals) } else { String::new() };
-                            frow.push(Cell::new(text, role.clone()));
+                            frow.push(Cell::new(text, role));
                         } else {
                             let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                             let mut acc = Accum::default();
@@ -454,7 +454,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                             } else {
                                 acc.finish(a).as_display()
                             };
-                            frow.push(Cell::new(text, role.clone()));
+                            frow.push(Cell::new(text, role));
                         }
                     }
                 } else {
@@ -472,7 +472,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                                     }
                                 }
                                 let text = if n > 0 { format_number(sum / n as f64, band_spec.decimals) } else { String::new() };
-                                frow.push(Cell::new(text, role.clone()));
+                                frow.push(Cell::new(text, role));
                             } else {
                                 let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                                 let mut acc = Accum::default();
@@ -488,7 +488,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                                 } else {
                                     acc.finish(a).as_display()
                                 };
-                                frow.push(Cell::new(text, role.clone()));
+                                frow.push(Cell::new(text, role));
                             }
                         }
                     }

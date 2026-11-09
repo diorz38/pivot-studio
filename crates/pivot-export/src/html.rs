@@ -3,15 +3,55 @@ use pivot_core::{Cell, CellRole, FooterBandKind, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 
 pub fn render(model: &ThemedTableModel, style: ExportStyle) -> String {
+    render_sheets(&[(&model.title, model)], style)
+}
+
+pub fn render_sheets(sheets: &[(&str, &ThemedTableModel)], style: ExportStyle) -> String {
     let ts = style.resolve();
-    let mut out = String::with_capacity(16 * 1024);
+    let mut out = String::with_capacity(24 * 1024 * sheets.len().max(1));
+    let title = sheets.first().map(|(n, _)| *n).unwrap_or("Pivot Export");
     out.push_str("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">");
     out.push_str("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
     out.push_str("<title>");
-    out.push_str(&escape(&model.title));
+    out.push_str(&escape(title));
     out.push_str("</title><style>");
-    out.push_str(&css(&ts));
-    out.push_str("</style></head><body><div class=\"pivot-wrap\"><table class=\"pivot\" cellspacing=\"0\" cellpadding=\"0\">");
+    out.push_str(&css_multi(&ts));
+    out.push_str("</style></head><body>");
+    if sheets.len() > 1 {
+        out.push_str("<div class=\"sheet-tabs\" role=\"tablist\">");
+        for (i, (name, _)) in sheets.iter().enumerate() {
+            out.push_str("<button class=\"tab");
+            if i == 0 { out.push_str(" active"); }
+            out.push_str("\" role=\"tab\" data-sheet=\"");
+            out.push_str(&i.to_string());
+            out.push_str("\" onclick=\"showSheet(");
+            out.push_str(&i.to_string());
+            out.push_str(")\">");
+            out.push_str(&escape(name));
+            out.push_str("</button>");
+        }
+        out.push_str("</div>");
+    }
+    for (i, (name, model)) in sheets.iter().enumerate() {
+        out.push_str("<div class=\"sheet-panel");
+        if i == 0 { out.push_str(" active"); }
+        out.push_str("\" data-sheet-panel=\"");
+        out.push_str(&i.to_string());
+        out.push_str("\"><h2 class=\"sheet-title\">");
+        out.push_str(&escape(name));
+        out.push_str("</h2><div class=\"pivot-wrap\">");
+        render_table(&mut out, model, &ts);
+        out.push_str("</div></div>");
+    }
+    if sheets.len() > 1 {
+        out.push_str("<script>function showSheet(i){document.querySelectorAll('.tab').forEach((b,idx)=>b.classList.toggle('active',idx===i));document.querySelectorAll('.sheet-panel').forEach((p,idx)=>p.classList.toggle('active',idx===i));}</script>");
+    }
+    out.push_str("</body></html>");
+    out
+}
+
+fn render_table(out: &mut String, model: &ThemedTableModel, ts: &TableStyle) {
+    out.push_str("<table class=\"pivot\" cellspacing=\"0\" cellpadding=\"0\">");
     out.push_str("<caption>");
     out.push_str(&escape(&model.title));
     out.push_str("</caption>");
@@ -21,7 +61,7 @@ pub fn render(model: &ThemedTableModel, style: ExportStyle) -> String {
     for row in &model.header_rows {
         out.push_str("<tr>");
         for cell in row {
-            render_th(&mut out, cell, &ts);
+            render_th(out, cell, ts);
         }
         out.push_str("</tr>");
     }
@@ -33,7 +73,7 @@ pub fn render(model: &ThemedTableModel, style: ExportStyle) -> String {
         let zebra = ri % 2 == 1;
         out.push_str(if zebra { "<tr class=\"zebra\">" } else { "<tr>" });
         for cell in row {
-            render_td(&mut out, cell, &ts, zebra);
+            render_td(out, cell, ts, zebra);
         }
         out.push_str("</tr>");
     }
@@ -47,15 +87,14 @@ pub fn render(model: &ThemedTableModel, style: ExportStyle) -> String {
             out.push_str(band_kind(band.kind));
             out.push_str("\">");
             for cell in &band.cells {
-                render_td(&mut out, cell, &ts, false);
+                render_td(out, cell, ts, false);
             }
             out.push_str("</tr>");
         }
         out.push_str("</tfoot>");
     }
 
-    out.push_str("</table></div></body></html>");
-    out
+    out.push_str("</table>");
 }
 
 fn render_th(out: &mut String, cell: &Cell, ts: &TableStyle) {
@@ -154,14 +193,22 @@ fn band_kind(kind: FooterBandKind) -> &'static str {
     }
 }
 
-fn css(ts: &TableStyle) -> String {
+fn css_multi(ts: &TableStyle) -> String {
     format!(
         "body{{margin:16px;background:{};color:{};font:13px Segoe UI,system-ui,sans-serif;}}\
          .pivot-wrap{{overflow:auto;}}\
          table.pivot{{border-collapse:collapse;border:1px solid {};min-width:320px;}}\
          caption{{caption-side:top;text-align:left;font-size:18px;font-weight:700;color:{};padding:8px 2px 10px;}}\
-         tfoot td{{border-top:1px solid {};}}",
-        rgb(ts.body.fill), rgb(ts.body.text), rgb(ts.border), rgb(ts.title), rgb(ts.border)
+         tfoot td{{border-top:1px solid {};}}\
+         .sheet-tabs{{display:flex;gap:6px;margin:0 0 12px;flex-wrap:wrap;}}\
+         .tab{{padding:6px 12px;border:1px solid {};background:{};color:{};cursor:pointer;border-radius:4px;font:inherit;}}\
+         .tab.active{{background:{};color:{};font-weight:600;}}\
+         .sheet-panel{{display:none;}}.sheet-panel.active{{display:block;}}\
+         .sheet-title{{margin:0 0 8px;font-size:14px;color:{};}}",
+        rgb(ts.body.fill), rgb(ts.body.text), rgb(ts.border), rgb(ts.title), rgb(ts.border),
+        rgb(ts.border), rgb(ts.stub_head.fill), rgb(ts.body.text),
+        rgb(ts.col_header.fill), rgb(ts.col_header.text),
+        rgb(ts.body.text)
     )
 }
 

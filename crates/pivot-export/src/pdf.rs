@@ -55,7 +55,7 @@ fn render_bytes(model: &ThemedTableModel, style: ExportStyle) -> Result<Vec<u8>>
         .map_err(|e| ExportError::Pdf(format!("{e:?}")))?;
 
     let mut state = PageState { doc, font, font_bold, page: page1, layer: layer1, y: PAGE_H - MARGIN, page_no: 1 };
-    let footer_total_h: f64 = model.footer_bands.iter().map(|b| band_height(b)).sum();
+    let footer_total_h: f64 = model.footer_bands.iter().map(band_height).sum();
     let continuation = continuation_label(style.output_language);
 
     for (si, slice) in slices.iter().enumerate() {
@@ -116,8 +116,8 @@ struct ColSlice {
 fn compute_natural_col_widths(model: &ThemedTableModel, cols: usize) -> Vec<f64> {
     let mut widths = vec![MIN_DATA_COL_W.max(28.0); cols];
     let rh = model.row_header_cols.min(cols);
-    for i in 0..rh {
-        widths[i] = MIN_HEADER_COL_W.max(38.0);
+    for w in widths.iter_mut().take(rh) {
+        *w = MIN_HEADER_COL_W.max(38.0);
     }
     // Estimate from content (capped). Built-in PDF font metrics are approximate.
     let mut max_chars = vec![0usize; cols];
@@ -179,7 +179,7 @@ fn partition_horizontal(model: &ThemedTableModel, natural: &[f64], table_w: f64)
         }
         if end == start { end = start + 1; } // ensure progress
         let mut idxs: Vec<usize> = (0..rh).collect();
-        for i in start..end { idxs.push(data_cols[i]); }
+        idxs.extend_from_slice(&data_cols[start..end]);
         slices.push(fit_slice(idxs, natural, table_w, rh));
         start = end;
     }
@@ -401,7 +401,7 @@ fn draw_row_occupancy_slice(
 }
 #[cfg(test)]
 mod pdf_pagination_tests {
-    use super::*;
+    
     use crate::{export_pdf, ExportStyle};
     use pivot_core::{Cell, CellRole, FooterBand, FooterBandKind, OutputLanguage, ThemedTableModel};
     use pivot_theme::table::{BorderThemeId, TableColorThemeId};

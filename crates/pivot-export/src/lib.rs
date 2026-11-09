@@ -63,8 +63,19 @@ pub fn export_html(path: impl AsRef<Path>, model: &ThemedTableModel, style: Expo
     Ok(())
 }
 
+pub fn export_html_sheets(path: impl AsRef<Path>, sheets: &[(&str, &ThemedTableModel)], style: ExportStyle) -> Result<()> {
+    if sheets.is_empty() { return Err(ExportError::Empty); }
+    let html = html::render_sheets(sheets, style);
+    std::fs::write(path, html)?;
+    Ok(())
+}
+
 pub fn export_xlsx(path: impl AsRef<Path>, model: &ThemedTableModel, style: ExportStyle) -> Result<()> {
     xlsx::write(path.as_ref(), model, style)
+}
+
+pub fn export_xlsx_sheets(path: impl AsRef<Path>, sheets: &[(&str, &ThemedTableModel)], style: ExportStyle) -> Result<()> {
+    xlsx::write_sheets(path.as_ref(), sheets, style)
 }
 
 pub fn export_pdf(path: impl AsRef<Path>, model: &ThemedTableModel, style: ExportStyle) -> Result<()> {
