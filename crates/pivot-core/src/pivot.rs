@@ -186,11 +186,16 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let total_cols = row_header_cols + col_key_vec.len() * value_count.max(1);
     let lang = spec.output_language;
 
+    let stub_head = spec
+        .stub_head
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| default_stub_head(spec, lang));
     let mut header_rows: Vec<Vec<Cell>> = Vec::new();
     if spec.columns.is_empty() {
         // single header row
         let mut hr = Vec::new();
-        hr.push(Cell::new(spec.stub_head.clone().unwrap_or_default(), CellRole::StubHead));
+        hr.push(Cell::new(stub_head.clone(), CellRole::StubHead));
         for _ in 1..row_header_cols {
             hr.push(Cell::new("", CellRole::RowHeader));
         }
@@ -207,7 +212,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         for level in 0..levels {
             let mut hr = Vec::new();
             if level == 0 {
-                hr.push(Cell::span(spec.stub_head.clone().unwrap_or_default(), CellRole::StubHead, row_header_cols, levels));
+                hr.push(Cell::span(stub_head.clone(), CellRole::StubHead, row_header_cols, levels));
             }
             // group consecutive same labels at this level given same prefix
             let mut i = 0;
@@ -587,6 +592,19 @@ fn subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage) -> String {
         En => format!("{prefix} Subtotal"),
         Id => format!("Subtotal {prefix}"),
         IdEn => format!("{prefix} Subtotal"),
+    }
+}
+
+fn default_stub_head(spec: &PivotSpec, lang: crate::spec::OutputLanguage) -> String {
+    let names = spec
+        .rows
+        .iter()
+        .map(|r| humanize_name(&r.name))
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        bi(lang, "Row", "Baris")
+    } else {
+        join_lang(lang, &names)
     }
 }
 

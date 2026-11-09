@@ -192,16 +192,29 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
 
                 ui.add_space(6.0);
                 ui.label(RichText::new("Stub head (col 1, AC3.1)").color(t.text_strong));
+                // Default is derived from row field name(s) when empty.
+                let auto_stub = app
+                    .pivot_model
+                    .as_ref()
+                    .and_then(|m| m.header_rows.first())
+                    .and_then(|r| r.first())
+                    .map(|c| c.text.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "(auto from row field)".to_string());
                 let mut stub = app.pivot_spec.stub_head.clone().unwrap_or_default();
-                let stub_resp = ui.text_edit_singleline(&mut stub);
+                let stub_resp = ui
+                    .add(egui::TextEdit::singleline(&mut stub).hint_text(&auto_stub))
+                    .on_hover_text("Leave empty to use the row column name by default");
                 if stub_resp.changed() {
                     app.pivot_spec.stub_head = if stub.trim().is_empty() { None } else { Some(stub.clone()) };
                     app.request_pivot_recompute();
                 }
-                if !app.pivot_spec.stub_head.is_some() && !stub.is_empty() { /* already normalized */ }
-                if app.pivot_spec.stub_head.is_some() && ui.small_button("Clear stub head").clicked() {
+                if app.pivot_spec.stub_head.is_some() && ui.small_button("Clear stub head (use default)").clicked() {
                     app.pivot_spec.stub_head = None;
                     app.request_pivot_recompute();
+                }
+                if app.pivot_spec.stub_head.is_none() {
+                    ui.label(RichText::new(format!("Default: {auto_stub}")).color(t.text_muted).size(10.5));
                 }
 
                 ui.add_space(8.0);
