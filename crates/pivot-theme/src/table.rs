@@ -1,13 +1,14 @@
-//! Role-based table themes and predefined presets (Phase 4, AC4.1-AC4.5).
-//! Resolved roles drive grid rendering (and later exporters) for parity.
+//! Role-based table styling: independent Color Theme and Border Theme (AC4.1+).
+//! Resolved roles drive grid rendering and exporters for parity.
 
 use crate::{Brightness, Tokens};
 use egui::Color32;
 use serde::{Deserialize, Serialize};
 
+/// Color palette preset (applied together with a [`BorderThemeId`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum TableThemeId {
+pub enum TableColorThemeId {
     #[default]
     ClassicGrid,
     Ledger,
@@ -15,42 +16,37 @@ pub enum TableThemeId {
     Executive,
     CompactDense,
     HighContrast,
-    /// Horizontal rules for header/footer bands; body values without grid borders.
-    HorizontalRules,
 }
 
-impl TableThemeId {
-    pub const ALL: [TableThemeId; 7] = [
-        TableThemeId::ClassicGrid,
-        TableThemeId::Ledger,
-        TableThemeId::Minimal,
-        TableThemeId::Executive,
-        TableThemeId::CompactDense,
-        TableThemeId::HighContrast,
-        TableThemeId::HorizontalRules,
+impl TableColorThemeId {
+    pub const ALL: [TableColorThemeId; 6] = [
+        TableColorThemeId::ClassicGrid,
+        TableColorThemeId::Ledger,
+        TableColorThemeId::Minimal,
+        TableColorThemeId::Executive,
+        TableColorThemeId::CompactDense,
+        TableColorThemeId::HighContrast,
     ];
 
     pub fn id(self) -> &'static str {
         match self {
-            TableThemeId::ClassicGrid => "classicGrid",
-            TableThemeId::Ledger => "ledger",
-            TableThemeId::Minimal => "minimal",
-            TableThemeId::Executive => "executive",
-            TableThemeId::CompactDense => "compactDense",
-            TableThemeId::HighContrast => "highContrast",
-            TableThemeId::HorizontalRules => "horizontalRules",
+            TableColorThemeId::ClassicGrid => "classicGrid",
+            TableColorThemeId::Ledger => "ledger",
+            TableColorThemeId::Minimal => "minimal",
+            TableColorThemeId::Executive => "executive",
+            TableColorThemeId::CompactDense => "compactDense",
+            TableColorThemeId::HighContrast => "highContrast",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            TableThemeId::ClassicGrid => "Classic Grid",
-            TableThemeId::Ledger => "Ledger / Zebra",
-            TableThemeId::Minimal => "Minimal",
-            TableThemeId::Executive => "Executive Accent",
-            TableThemeId::CompactDense => "Compact Dense",
-            TableThemeId::HighContrast => "High Contrast",
-            TableThemeId::HorizontalRules => "Horizontal Rules (header/footer)",
+            TableColorThemeId::ClassicGrid => "Classic Grid",
+            TableColorThemeId::Ledger => "Ledger / Zebra",
+            TableColorThemeId::Minimal => "Minimal",
+            TableColorThemeId::Executive => "Executive Accent",
+            TableColorThemeId::CompactDense => "Compact Dense",
+            TableColorThemeId::HighContrast => "High Contrast",
         }
     }
 
@@ -59,6 +55,60 @@ impl TableThemeId {
             .into_iter()
             .find(|t| t.id().eq_ignore_ascii_case(s) || t.label().eq_ignore_ascii_case(s))
     }
+}
+
+/// Border preset (applied together with a [`TableColorThemeId`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BorderThemeId {
+    /// Full cell grid borders.
+    #[default]
+    Full,
+    /// Horizontal rules for header/footer bands; body values without grid borders.
+    HorizontalRules,
+    /// No cell borders.
+    None,
+}
+
+impl BorderThemeId {
+    pub const ALL: [BorderThemeId; 3] = [BorderThemeId::Full, BorderThemeId::HorizontalRules, BorderThemeId::None];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            BorderThemeId::Full => "full",
+            BorderThemeId::HorizontalRules => "horizontalRules",
+            BorderThemeId::None => "none",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BorderThemeId::Full => "Full Border",
+            BorderThemeId::HorizontalRules => "Horizontal Rules (header/footer)",
+            BorderThemeId::None => "No Border",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|t| t.id().eq_ignore_ascii_case(s) || t.label().eq_ignore_ascii_case(s))
+    }
+}
+
+/// Backward-compatible combined theme parser for legacy `table_theme_id` values.
+/// Returns `(color, border)`. Unknown values fall back to defaults.
+pub fn parse_legacy_theme(s: &str) -> (TableColorThemeId, BorderThemeId) {
+    if let Some(b) = BorderThemeId::parse(s) {
+        return (TableColorThemeId::default(), b);
+    }
+    if s.eq_ignore_ascii_case("horizontalRules") || s.eq_ignore_ascii_case("Horizontal Rules (header/footer)") {
+        return (TableColorThemeId::ClassicGrid, BorderThemeId::HorizontalRules);
+    }
+    if let Some(c) = TableColorThemeId::parse(s) {
+        return (c, BorderThemeId::Full);
+    }
+    (TableColorThemeId::default(), BorderThemeId::default())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,7 +131,8 @@ pub struct RoleStyle {
 /// Fully resolved table style roles for the current app brightness + table theme.
 #[derive(Debug, Clone, Copy)]
 pub struct TableStyle {
-    pub id: TableThemeId,
+    pub color: TableColorThemeId,
+    pub border_theme: BorderThemeId,
     pub title: Color32,
     pub stub_head: RoleStyle,
     pub col_header: RoleStyle,
@@ -111,75 +162,83 @@ fn blend(a: Color32, b: Color32, t: f32) -> Color32 {
 }
 
 impl TableStyle {
-    pub fn resolve(id: TableThemeId, b: Brightness, t: &Tokens) -> Self {
-        if b == Brightness::HighContrast || id == TableThemeId::HighContrast {
-            return Self::high_contrast(t);
+    pub fn resolve(color: TableColorThemeId, border_theme: BorderThemeId, b: Brightness, t: &Tokens) -> Self {
+        if b == Brightness::HighContrast || color == TableColorThemeId::HighContrast {
+            return Self::high_contrast(border_theme, t);
         }
-        let (header_fill, header_text, zebra_fill, total_fill, notes_text, zebra) = match (id, t.dark) {
-            (TableThemeId::ClassicGrid, true) => (hex(0x2f3745), t.text_strong, t.grid_body, hex(0x3a4558), t.text_muted, false),
-            (TableThemeId::ClassicGrid, false) => (hex(0xd8e3f3), hex(0x102a56), t.grid_body, hex(0xc7d7f0), t.text_muted, false),
-            (TableThemeId::Ledger, true) => (hex(0x334155), t.text_strong, blend(t.grid_body, t.panel_alt, 0.55), hex(0x1f3b2d), t.text_muted, true),
-            (TableThemeId::Ledger, false) => (hex(0xd9eadc), hex(0x14361f), blend(t.grid_body, hex(0xeaf4ed), 0.7), hex(0xcfe8d6), t.text_muted, true),
-            (TableThemeId::Minimal, true) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
-            (TableThemeId::Minimal, false) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
-            (TableThemeId::Executive, true) => (hex(0x1e3a5f), hex(0xf8fbff), blend(t.grid_body, hex(0x16253d), 0.35), hex(0x2a4d7a), t.text_muted, false),
-            (TableThemeId::Executive, false) => (hex(0x1f4e79), Color32::WHITE, blend(t.grid_body, hex(0xe8f0fa), 0.45), hex(0xd4e4f7), t.text_muted, false),
-            (TableThemeId::CompactDense, true) => (hex(0x3b4454), t.text_strong, blend(t.grid_body, t.panel, 0.4), hex(0x454f61), t.text_muted, true),
-            (TableThemeId::CompactDense, false) => (hex(0xd5dde8), hex(0x0f172a), blend(t.grid_body, hex(0xe7edf5), 0.55), hex(0xc8d3e2), t.text_muted, true),
-            (TableThemeId::HorizontalRules, true) => (hex(0x2f3745), t.text_strong, t.grid_body, hex(0x3a4558), t.text_muted, false),
-            (TableThemeId::HorizontalRules, false) => (hex(0xe6edf7), hex(0x102a56), t.grid_body, hex(0xd8e5f6), t.text_muted, false),
-            (TableThemeId::HighContrast, _) => unreachable!(),
+        let (header_fill, header_text, zebra_fill, total_fill, notes_text, zebra) = match (color, t.dark) {
+            (TableColorThemeId::ClassicGrid, true) => (hex(0x2f3745), t.text_strong, t.grid_body, hex(0x3a4558), t.text_muted, false),
+            (TableColorThemeId::ClassicGrid, false) => (hex(0xd8e3f3), hex(0x102a56), t.grid_body, hex(0xc7d7f0), t.text_muted, false),
+            (TableColorThemeId::Ledger, true) => (hex(0x334155), t.text_strong, blend(t.grid_body, t.panel_alt, 0.55), hex(0x1f3b2d), t.text_muted, true),
+            (TableColorThemeId::Ledger, false) => (hex(0xd9eadc), hex(0x14361f), blend(t.grid_body, hex(0xeaf4ed), 0.7), hex(0xcfe8d6), t.text_muted, true),
+            (TableColorThemeId::Minimal, true) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
+            (TableColorThemeId::Minimal, false) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
+            (TableColorThemeId::Executive, true) => (hex(0x1e3a5f), hex(0xf8fbff), blend(t.grid_body, hex(0x16253d), 0.35), hex(0x2a4d7a), t.text_muted, false),
+            (TableColorThemeId::Executive, false) => (hex(0x1f4e79), Color32::WHITE, blend(t.grid_body, hex(0xe8f0fa), 0.45), hex(0xd4e4f7), t.text_muted, false),
+            (TableColorThemeId::CompactDense, true) => (hex(0x3b4454), t.text_strong, blend(t.grid_body, t.panel, 0.4), hex(0x454f61), t.text_muted, true),
+            (TableColorThemeId::CompactDense, false) => (hex(0xd5dde8), hex(0x0f172a), blend(t.grid_body, hex(0xe7edf5), 0.55), hex(0xc8d3e2), t.text_muted, true),
+            (TableColorThemeId::HighContrast, _) => unreachable!(),
         };
-        let grid_line = if id == TableThemeId::Minimal { blend(t.grid_line, t.panel, 0.35) } else { t.grid_line };
-        let row_h = if id == TableThemeId::CompactDense { 24.0 } else { 28.0 };
-        let header_h = if id == TableThemeId::CompactDense { 26.0 } else { 30.0 };
-        let border_mode = if id == TableThemeId::HorizontalRules { CellBorderMode::HorizontalOnly } else { CellBorderMode::All };
-        let body_border = if id == TableThemeId::HorizontalRules { CellBorderMode::None } else { border_mode };
+        let grid_line = if color == TableColorThemeId::Minimal { blend(t.grid_line, t.panel, 0.35) } else { t.grid_line };
+        let row_h = if color == TableColorThemeId::CompactDense { 24.0 } else { 28.0 };
+        let header_h = if color == TableColorThemeId::CompactDense { 26.0 } else { 30.0 };
+        let (border_mode, body_border, outer_border) = match border_theme {
+            BorderThemeId::Full => (CellBorderMode::All, CellBorderMode::All, true),
+            BorderThemeId::HorizontalRules => (CellBorderMode::HorizontalOnly, CellBorderMode::None, false),
+            BorderThemeId::None => (CellBorderMode::None, CellBorderMode::None, false),
+        };
         let role = |fill, text, strong, bm| RoleStyle { fill, text, strong, grid_line, border_mode: bm };
         Self {
-            id,
+            color,
+            border_theme,
             title: t.text_strong,
             stub_head: role(header_fill, header_text, true, border_mode),
             col_header: role(header_fill, header_text, true, border_mode),
-            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.35 }), if id == TableThemeId::Executive && !t.dark { header_text } else { t.text_strong }, true, border_mode),
+            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.35 }), if color == TableColorThemeId::Executive && !t.dark { header_text } else { t.text_strong }, true, border_mode),
             body: role(t.grid_body, t.text, false, body_border),
             body_zebra: role(zebra_fill, t.text, false, body_border),
             subtotal: role(blend(total_fill, header_fill, 0.45), t.text_strong, true, border_mode),
-            grand_total: role(total_fill, if id == TableThemeId::Executive && t.dark { Color32::WHITE } else { t.text_strong }, true, border_mode),
+            grand_total: role(total_fill, if color == TableColorThemeId::Executive && t.dark { Color32::WHITE } else { t.text_strong }, true, border_mode),
             footer: role(blend(total_fill, t.panel_alt, 0.6), t.text_strong, true, border_mode),
             notes: role(t.panel_alt, notes_text, false, border_mode),
             selection: t.selection,
             border: t.border,
-            outer_border: id != TableThemeId::HorizontalRules,
+            outer_border,
             zebra,
             row_height: row_h,
             header_height: header_h,
         }
     }
 
-    fn high_contrast(t: &Tokens) -> Self {
-        let role = |fill, text, strong| RoleStyle {
+    fn high_contrast(border_theme: BorderThemeId, t: &Tokens) -> Self {
+        let (border_mode, body_border, outer_border) = match border_theme {
+            BorderThemeId::Full => (CellBorderMode::All, CellBorderMode::All, true),
+            BorderThemeId::HorizontalRules => (CellBorderMode::HorizontalOnly, CellBorderMode::None, false),
+            BorderThemeId::None => (CellBorderMode::None, CellBorderMode::None, false),
+        };
+        let role = |fill, text, strong, bm| RoleStyle {
             fill,
             text,
             strong,
             grid_line: Color32::WHITE,
-            border_mode: CellBorderMode::All,
+            border_mode: bm,
         };
         Self {
-            id: TableThemeId::HighContrast,
+            color: TableColorThemeId::HighContrast,
+            border_theme,
             title: Color32::WHITE,
-            stub_head: role(Color32::BLACK, Color32::WHITE, true),
-            col_header: role(Color32::BLACK, Color32::WHITE, true),
-            row_header: role(Color32::BLACK, Color32::WHITE, true),
-            body: role(Color32::BLACK, Color32::WHITE, false),
-            body_zebra: role(hex(0x101010), Color32::WHITE, false),
-            subtotal: role(hex(0x1a1a00), hex(0xffea00), true),
-            grand_total: role(hex(0x222200), hex(0xffea00), true),
-            footer: role(Color32::BLACK, Color32::WHITE, true),
-            notes: role(Color32::BLACK, hex(0x00ffff), false),
+            stub_head: role(Color32::BLACK, Color32::WHITE, true, border_mode),
+            col_header: role(Color32::BLACK, Color32::WHITE, true, border_mode),
+            row_header: role(Color32::BLACK, Color32::WHITE, true, border_mode),
+            body: role(Color32::BLACK, Color32::WHITE, false, body_border),
+            body_zebra: role(hex(0x101010), Color32::WHITE, false, body_border),
+            subtotal: role(hex(0x1a1a00), hex(0xffea00), true, border_mode),
+            grand_total: role(hex(0x222200), hex(0xffea00), true, border_mode),
+            footer: role(Color32::BLACK, Color32::WHITE, true, border_mode),
+            notes: role(Color32::BLACK, hex(0x00ffff), false, border_mode),
             selection: t.selection,
             border: Color32::WHITE,
-            outer_border: true,
+            outer_border,
             zebra: true,
             row_height: 28.0,
             header_height: 30.0,
@@ -231,23 +290,37 @@ mod tests {
 
     #[test]
     fn theme_ids_stable() {
-        assert_eq!(TableThemeId::ALL.len(), 7);
-        for t in TableThemeId::ALL {
-            assert_eq!(TableThemeId::parse(t.id()), Some(t));
-            assert_eq!(TableThemeId::parse(t.label()), Some(t));
+        assert_eq!(TableColorThemeId::ALL.len(), 6);
+        for t in TableColorThemeId::ALL {
+            assert_eq!(TableColorThemeId::parse(t.id()), Some(t));
+            assert_eq!(TableColorThemeId::parse(t.label()), Some(t));
         }
+        assert_eq!(BorderThemeId::ALL.len(), 3);
+        for t in BorderThemeId::ALL {
+            assert_eq!(BorderThemeId::parse(t.id()), Some(t));
+        }
+        // legacy compat
+        let (c, b) = parse_legacy_theme("horizontalRules");
+        assert_eq!(c, TableColorThemeId::ClassicGrid);
+        assert_eq!(b, BorderThemeId::HorizontalRules);
+        let (c, b) = parse_legacy_theme("ledger");
+        assert_eq!(c, TableColorThemeId::Ledger);
+        assert_eq!(b, BorderThemeId::Full);
     }
 
     #[test]
     fn resolve_all_themes_and_brightnesses() {
         for b in Brightness::ALL {
             let tokens = Tokens::for_brightness(b);
-            for id in TableThemeId::ALL {
-                let s = TableStyle::resolve(id, b, &tokens);
-                // basic legibility: text differs from fill for headers
-                assert_ne!(s.col_header.text, s.col_header.fill);
-                assert_ne!(s.grand_total.text, s.grand_total.fill);
-                assert!(s.row_height > 0.0);
+            for color in TableColorThemeId::ALL {
+                for border in BorderThemeId::ALL {
+                    let s = TableStyle::resolve(color, border, b, &tokens);
+                    assert_ne!(s.col_header.text, s.col_header.fill);
+                    assert_ne!(s.grand_total.text, s.grand_total.fill);
+                    assert!(s.row_height > 0.0);
+                    assert_eq!(s.color, if b == Brightness::HighContrast { TableColorThemeId::HighContrast } else { color });
+                    assert_eq!(s.border_theme, border);
+                }
             }
         }
     }

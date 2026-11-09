@@ -9,7 +9,7 @@ pub mod pdf;
 pub mod xlsx;
 
 use pivot_core::ThemedTableModel;
-use pivot_theme::table::{TableStyle, TableThemeId};
+use pivot_theme::table::{BorderThemeId, TableColorThemeId, TableStyle};
 use pivot_theme::{Brightness, Tokens};
 use std::path::Path;
 use thiserror::Error;
@@ -32,20 +32,25 @@ pub type Result<T> = std::result::Result<T, ExportError>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ExportStyle {
-    pub table_theme: TableThemeId,
+    pub color_theme: TableColorThemeId,
+    pub border_theme: BorderThemeId,
     pub brightness: Brightness,
 }
 
 impl Default for ExportStyle {
     fn default() -> Self {
-        Self { table_theme: TableThemeId::default(), brightness: Brightness::MediumDark }
+        Self {
+            color_theme: TableColorThemeId::default(),
+            border_theme: BorderThemeId::Full,
+            brightness: Brightness::MediumDark,
+        }
     }
 }
 
 impl ExportStyle {
     pub fn resolve(self) -> TableStyle {
         let tokens = Tokens::for_brightness(self.brightness);
-        TableStyle::resolve(self.table_theme, self.brightness, &tokens)
+        TableStyle::resolve(self.color_theme, self.border_theme, self.brightness, &tokens)
     }
 }
 
@@ -152,10 +157,18 @@ mod tests {
         assert!(!h2.contains(">West<"));
 
         let p3 = dir.path().join("c.html");
-        crate::export_html(&p3, &m, ExportStyle { table_theme: pivot_theme::table::TableThemeId::Ledger, brightness: pivot_theme::Brightness::Light }).unwrap();
+        crate::export_html(&p3, &m, ExportStyle {
+            color_theme: pivot_theme::table::TableColorThemeId::Ledger,
+            border_theme: BorderThemeId::HorizontalRules,
+            brightness: pivot_theme::Brightness::Light,
+        }).unwrap();
         let h3 = std::fs::read_to_string(&p3).unwrap();
         let p4 = dir.path().join("d.html");
-        crate::export_html(&p4, &m, ExportStyle { table_theme: pivot_theme::table::TableThemeId::Minimal, brightness: pivot_theme::Brightness::Dark }).unwrap();
+        crate::export_html(&p4, &m, ExportStyle {
+            color_theme: pivot_theme::table::TableColorThemeId::Minimal,
+            border_theme: BorderThemeId::None,
+            brightness: pivot_theme::Brightness::Dark,
+        }).unwrap();
         let h4 = std::fs::read_to_string(&p4).unwrap();
         assert_ne!(h3, h4, "different table themes should produce different HTML styling");
     }

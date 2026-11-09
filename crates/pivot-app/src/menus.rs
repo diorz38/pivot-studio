@@ -85,15 +85,22 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
             "Format",
             vec![
                 Item::Sub(
-                    "Table Theme".to_string(),
+                    "Color Theme".to_string(),
                     vec![
-                        cmd_p("Classic Grid", "format.theme", json!({"id":"classicGrid"})),
-                        cmd_p("Ledger / Zebra", "format.theme", json!({"id":"ledger"})),
-                        cmd_p("Minimal", "format.theme", json!({"id":"minimal"})),
-                        cmd_p("Executive Accent", "format.theme", json!({"id":"executive"})),
-                        cmd_p("Compact Dense", "format.theme", json!({"id":"compactDense"})),
-                        cmd_p("Horizontal Rules (header/footer)", "format.theme", json!({"id":"horizontalRules"})),
-                        cmd_p("High Contrast", "format.theme", json!({"id":"highContrast"})),
+                        cmd_p("Classic Grid", "format.color_theme", json!({"id":"classicGrid"})),
+                        cmd_p("Ledger / Zebra", "format.color_theme", json!({"id":"ledger"})),
+                        cmd_p("Minimal", "format.color_theme", json!({"id":"minimal"})),
+                        cmd_p("Executive Accent", "format.color_theme", json!({"id":"executive"})),
+                        cmd_p("Compact Dense", "format.color_theme", json!({"id":"compactDense"})),
+                        cmd_p("High Contrast", "format.color_theme", json!({"id":"highContrast"})),
+                    ],
+                ),
+                Item::Sub(
+                    "Border Theme".to_string(),
+                    vec![
+                        cmd_p("Full Border", "format.border_theme", json!({"id":"full"})),
+                        cmd_p("Horizontal Rules (header/footer)", "format.border_theme", json!({"id":"horizontalRules"})),
+                        cmd_p("No Border", "format.border_theme", json!({"id":"none"})),
                     ],
                 ),
                 cmd("Number Format...", "format.number"),

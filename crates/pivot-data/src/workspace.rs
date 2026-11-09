@@ -1,4 +1,4 @@
-﻿//! `.pivot` workspace persistence (Phase 7 / decision #5).
+//! `.pivot` workspace persistence (Phase 7 / decision #5).
 //!
 //! A `.pivot` file is a ZIP container. It stores workspace metadata, `PivotSpec`,
 //! theme/UI preferences, and sanitized source metadata. It never stores secrets or
@@ -42,10 +42,42 @@ impl Default for WorkspaceManifest {
 pub struct WorkspaceView {
     #[serde(default)]
     pub brightness_id: Option<String>,
+    /// Color theme preset id. For legacy workspaces, may contain a combined/old theme id.
     #[serde(default)]
     pub table_theme_id: Option<String>,
+    /// Border theme preset id. Absent in legacy workspaces; resolved via compat on load.
+    #[serde(default)]
+    pub border_theme_id: Option<String>,
     #[serde(default)]
     pub on_home: bool,
+}
+
+impl WorkspaceView {
+    /// Resolve color + border theme ids with backward compatibility for legacy `table_theme_id` values
+    /// (including old combined `horizontalRules` theme and any missing `border_theme_id`).
+    pub fn resolved_theme_ids(&self) -> (String, String) {
+        if let (Some(c), Some(b)) = (&self.table_theme_id, &self.border_theme_id) {
+            let legacy = c.as_str();
+            if legacy.eq_ignore_ascii_case("horizontalRules") {
+                return ("classicGrid".to_string(), "horizontalRules".to_string());
+            }
+            return (c.clone(), b.clone());
+        }
+        if let Some(legacy) = &self.table_theme_id {
+            return Self::compat_from_legacy(legacy);
+        }
+        ("classicGrid".to_string(), "full".to_string())
+    }
+
+    fn compat_from_legacy(s: &str) -> (String, String) {
+        if s.eq_ignore_ascii_case("horizontalRules") {
+            ("classicGrid".to_string(), "horizontalRules".to_string())
+        } else if s.eq_ignore_ascii_case("full") || s.eq_ignore_ascii_case("none") {
+            ("classicGrid".to_string(), s.to_ascii_lowercase())
+        } else {
+            (s.to_string(), "full".to_string())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,6 +235,7 @@ mod tests {
             view: WorkspaceView {
                 brightness_id: Some("dark".into()),
                 table_theme_id: Some("ledger".into()),
+                border_theme_id: Some("horizontalRules".into()),
                 on_home: false,
             },
             source: WorkspaceSource::File {
@@ -219,10 +252,24 @@ mod tests {
         assert_eq!(loaded.manifest.version, FORMAT_VERSION);
         assert_eq!(loaded.spec.title_override.as_deref(), Some("My Pivot"));
         assert_eq!(loaded.view.table_theme_id.as_deref(), Some("ledger"));
+        assert_eq!(loaded.view.border_theme_id.as_deref(), Some("horizontalRules"));
+        let (c, b) = loaded.view.resolved_theme_ids();
+        assert_eq!(c, "ledger");
+        assert_eq!(b, "horizontalRules");
         match loaded.source {
             WorkspaceSource::File { file_kind, .. } => assert_eq!(file_kind.as_deref(), Some("csv")),
             _ => panic!("expected file source"),
         }
+    }
+
+    #[test]
+    fn ac7_compat_legacy_theme_ids() {
+        let v = WorkspaceView { table_theme_id: Some("horizontalRules".to_string()), border_theme_id: None, ..WorkspaceView::default() };
+        assert_eq!(v.resolved_theme_ids(), ("classicGrid".to_string(), "horizontalRules".to_string()));
+        let v = WorkspaceView { table_theme_id: Some("ledger".to_string()), border_theme_id: None, ..WorkspaceView::default() };
+        assert_eq!(v.resolved_theme_ids(), ("ledger".to_string(), "full".to_string()));
+        let v = WorkspaceView { table_theme_id: Some("ledger".to_string()), border_theme_id: Some("none".to_string()), ..WorkspaceView::default() };
+        assert_eq!(v.resolved_theme_ids(), ("ledger".to_string(), "none".to_string()));
     }
 
     #[test]

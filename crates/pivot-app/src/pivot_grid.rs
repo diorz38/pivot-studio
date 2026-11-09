@@ -3,7 +3,7 @@
 
 use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use pivot_core::model::{CellRole, ThemedTableModel};
-use pivot_theme::table::{CellBorderMode, TableStyle, TableThemeId};
+use pivot_theme::table::{BorderThemeId, CellBorderMode, TableColorThemeId, TableStyle};
 use pivot_theme::{Brightness, Tokens};
 
 const PAD_X: f32 = 8.0;
@@ -73,8 +73,15 @@ fn ensure_widths(state: &mut GridUiState, model: &ThemedTableModel) {
     }
 }
 
-pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens, brightness: Brightness, table_theme: TableThemeId) {
-    let style = TableStyle::resolve(table_theme, brightness, t);
+pub fn show(
+    ui: &mut Ui,
+    model: &ThemedTableModel,
+    t: &Tokens,
+    brightness: Brightness,
+    color_theme: TableColorThemeId,
+    border_theme: BorderThemeId,
+) {
+    let style = TableStyle::resolve(color_theme, border_theme, brightness, t);
     let grid_id = ui.id().with("pivot_grid_state");
     let mut state = GridUiState::load(ui.ctx(), grid_id);
     ensure_widths(&mut state, model);

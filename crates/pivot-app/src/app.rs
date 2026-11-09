@@ -9,7 +9,11 @@ use pivot_core::{
 use pivot_data::{FileKind, db_import::{self, CredentialMode, MySqlProfile}};
 use pivot_data::workspace::{self, WorkspaceFile, WorkspaceSource, WorkspaceView};
 use pivot_export::ExportStyle;
-use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
+use pivot_theme::{
+    apply,
+    table::{parse_legacy_theme, BorderThemeId, TableColorThemeId},
+    Brightness, Tokens,
+};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +61,8 @@ pub struct ExportState {
 
 pub struct PivotApp {
     pub brightness: Brightness,
-    pub table_theme: TableThemeId,
+    pub table_color_theme: TableColorThemeId,
+    pub table_border_theme: BorderThemeId,
     pub status: String,
     brightness_applied: Option<Brightness>,
     exit_requested: bool,
@@ -113,7 +118,8 @@ impl PivotApp {
         apply(&cc.egui_ctx, &tokens);
         Self {
             brightness,
-            table_theme: TableThemeId::default(),
+            table_color_theme: TableColorThemeId::default(),
+            table_border_theme: BorderThemeId::default(),
             status: "Home - open a saved project or import data to start.".to_string(),
             brightness_applied: Some(brightness),
             exit_requested: false,
@@ -746,7 +752,8 @@ impl PivotApp {
             spec: self.pivot_spec.clone(),
             view: WorkspaceView {
                 brightness_id: Some(self.brightness.id().to_string()),
-                table_theme_id: Some(self.table_theme.id().to_string()),
+                table_theme_id: Some(self.table_color_theme.id().to_string()),
+                border_theme_id: Some(self.table_border_theme.id().to_string()),
                 on_home: self.on_home,
             },
             source,
@@ -823,8 +830,10 @@ impl PivotApp {
         if let Some(id) = ws.view.brightness_id.as_deref() {
             if let Some(b) = Brightness::parse(id) { self.brightness = b; }
         }
-        if let Some(id) = ws.view.table_theme_id.as_deref() {
-            if let Some(t) = TableThemeId::parse(id) { self.table_theme = t; }
+        if ws.view.border_theme_id.is_some() || ws.view.table_theme_id.is_some() {
+            let (cid, bid) = ws.view.resolved_theme_ids();
+            if let Some(t) = TableColorThemeId::parse(&cid) { self.table_color_theme = t; }
+            if let Some(b) = BorderThemeId::parse(&bid) { self.table_border_theme = b; }
         }
         self.on_home = ws.view.on_home;
         self.table = None;
@@ -924,7 +933,11 @@ impl PivotApp {
             self.status = "Export cancelled.".to_string();
             return;
         };
-        let style = ExportStyle { table_theme: self.table_theme, brightness: self.brightness };
+        let style = ExportStyle {
+            color_theme: self.table_color_theme,
+            border_theme: self.table_border_theme,
+            brightness: self.brightness,
+        };
         let (tx, rx) = mpsc::channel::<ExportMsg>();
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_flag = Arc::clone(&cancel);
@@ -1010,15 +1023,46 @@ impl PivotApp {
                 }
             }
             "format.theme" => {
+                // Legacy combined command: try color, border, or legacy mapping.
                 if let Some(id) = params.get("id").and_then(|v| v.as_str()) {
-                    if let Some(theme) = TableThemeId::parse(id) {
-                        self.table_theme = theme;
-                        self.status = format!("Table theme set to {}.", theme.label());
+                    if let Some(theme) = TableColorThemeId::parse(id) {
+                        self.table_color_theme = theme;
+                        self.status = format!("Color theme set to {}.", theme.label());
+                    } else if let Some(border) = BorderThemeId::parse(id) {
+                        self.table_border_theme = border;
+                        self.status = format!("Border theme set to {}.", border.label());
                     } else {
-                        self.status = format!("Unknown table theme: {id}.");
+                        let (cid, bid) = parse_legacy_theme(id);
+                        self.table_color_theme = cid;
+                        self.table_border_theme = bid;
+                        self.status = format!("Theme set to {} / {}.", cid.label(), bid.label());
                     }
                 } else {
-                    self.status = "Select a table theme from Format > Table Theme.".to_string();
+                    self.status = "Select a theme from Format > Color/Border Theme.".to_string();
+                }
+            }
+            "format.color_theme" => {
+                if let Some(id) = params.get("id").and_then(|v| v.as_str()) {
+                    if let Some(theme) = TableColorThemeId::parse(id) {
+                        self.table_color_theme = theme;
+                        self.status = format!("Color theme set to {}.", theme.label());
+                    } else {
+                        self.status = format!("Unknown color theme: {id}.");
+                    }
+                } else {
+                    self.status = "Select a color theme from Format > Color Theme.".to_string();
+                }
+            }
+            "format.border_theme" => {
+                if let Some(id) = params.get("id").and_then(|v| v.as_str()) {
+                    if let Some(theme) = BorderThemeId::parse(id) {
+                        self.table_border_theme = theme;
+                        self.status = format!("Border theme set to {}.", theme.label());
+                    } else {
+                        self.status = format!("Unknown border theme: {id}.");
+                    }
+                } else {
+                    self.status = "Select a border theme from Format > Border Theme.".to_string();
                 }
             }
             "view.reset_layout" => {
@@ -1064,12 +1108,18 @@ impl PivotApp {
                             .and_then(|v| v.as_str())
                             .and_then(Brightness::parse)
                             .map(|b| b == app.brightness)
-                    } else if id == "format.theme" {
+                    } else if id == "format.theme" || id == "format.color_theme" {
                         params
                             .get("id")
                             .and_then(|v| v.as_str())
-                            .and_then(pivot_theme::table::TableThemeId::parse)
-                            .map(|t| t == app.table_theme)
+                            .and_then(TableColorThemeId::parse)
+                            .map(|t| t == app.table_color_theme)
+                    } else if id == "format.border_theme" {
+                        params
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(BorderThemeId::parse)
+                            .map(|t| t == app.table_border_theme)
                     } else {
                         None
                     };

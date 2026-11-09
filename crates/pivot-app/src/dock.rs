@@ -403,9 +403,17 @@ fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
 fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(model) = &app.pivot_model {
         ui.label(RichText::new(&model.title).strong().color(t.text_strong).size(16.0));
-        ui.label(RichText::new(format!("Theme: {}", app.table_theme.label())).color(t.text_muted).size(11.0));
+        ui.label(
+            RichText::new(format!(
+                "Theme: {} / {}",
+                app.table_color_theme.label(),
+                app.table_border_theme.label()
+            ))
+            .color(t.text_muted)
+            .size(11.0),
+        );
         ui.add_space(6.0);
-        render_model(model, ui, t, app.brightness, app.table_theme);
+        render_model(model, ui, t, app.brightness, app.table_color_theme, app.table_border_theme);
     } else if let Some(table) = &app.table {
         ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
         let has_rows = !app.pivot_spec.rows.is_empty();
@@ -443,8 +451,15 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
-fn render_model(model: &ThemedTableModel, ui: &mut egui::Ui, t: &Tokens, brightness: pivot_theme::Brightness, table_theme: pivot_theme::table::TableThemeId) {
-    crate::pivot_grid::show(ui, model, t, brightness, table_theme);
+fn render_model(
+    model: &ThemedTableModel,
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    brightness: pivot_theme::Brightness,
+    color_theme: pivot_theme::table::TableColorThemeId,
+    border_theme: pivot_theme::table::BorderThemeId,
+) {
+    crate::pivot_grid::show(ui, model, t, brightness, color_theme, border_theme);
 }
 
 fn op_label(op: FilterOp) -> &'static str {
