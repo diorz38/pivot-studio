@@ -412,19 +412,20 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 for _ in 1..row_header_cols { frow.push(Cell::new("", role.clone())); }
                 if spec.columns.is_empty() {
                     for (vi, (ci, vf)) in value_fields.iter().enumerate() {
-                        let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
-                        if a == Aggregate::Average && use_band_agg && band_spec.aggregate.is_none() && band_spec.field.is_none() && matches!(band_spec.kind, FooterBandKind::Average) {
+                        if matches!(band_spec.kind, FooterBandKind::Average) && band_spec.field.is_none() {
                             let mut sum = 0.0_f64; let mut n = 0_i64;
                             let empty_ck = Key(vec![]);
                             for rk in &row_key_vec {
                                 if let Some(acc) = cells.get(&(rk.clone(), empty_ck.clone(), vi)) {
                                     let v = acc.finish(vf.aggregate);
-                                    if let Some(num) = numeric(&v) { sum += num; n += 1; }
+                                    let num = numeric(&v).or_else(|| v.as_display().trim().replace(',', "").parse::<f64>().ok());
+                                    if let Some(num) = num { sum += num; n += 1; }
                                 }
                             }
                             let text = if n > 0 { numeric_value(sum / n as f64).as_display() } else { String::new() };
                             frow.push(Cell::new(text, role.clone()));
                         } else {
+                            let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                             let mut acc = Accum::default();
                             for r in 0..table.row_count() {
                                 if !passes_filters(table, r, &spec.filters, &idx) { continue; }
@@ -438,19 +439,20 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                     // per column key
                     for ck in &col_key_vec {
                         for (vi, (ci, vf)) in value_fields.iter().enumerate() {
-                            let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
-                            if a == Aggregate::Average && use_band_agg && band_spec.aggregate.is_none() && band_spec.field.is_none() && matches!(band_spec.kind, FooterBandKind::Average) {
-                                // Average of displayed/calculated pivot values in this column (body rows), excluding subtotals/grand totals.
+                            if matches!(band_spec.kind, FooterBandKind::Average) && band_spec.field.is_none() {
+                                // Mean of displayed/calculated pivot values in this column (detail body rows).
                                 let mut sum = 0.0_f64; let mut n = 0_i64;
                                 for rk in &row_key_vec {
                                     if let Some(acc) = cells.get(&(rk.clone(), ck.clone(), vi)) {
                                         let v = acc.finish(vf.aggregate);
-                                        if let Some(num) = numeric(&v) { sum += num; n += 1; }
+                                        let num = numeric(&v).or_else(|| v.as_display().trim().replace(',', "").parse::<f64>().ok());
+                                        if let Some(num) = num { sum += num; n += 1; }
                                     }
                                 }
                                 let text = if n > 0 { numeric_value(sum / n as f64).as_display() } else { String::new() };
                                 frow.push(Cell::new(text, role.clone()));
                             } else {
+                                let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
                                 let mut acc = Accum::default();
                                 for r in 0..table.row_count() {
                                     if !passes_filters(table, r, &spec.filters, &idx) { continue; }
@@ -767,8 +769,8 @@ mod tests {
         assert!(matches!(m.footer_bands[1].kind, FooterBandKind::Average));
         assert!(matches!(m.footer_bands[2].kind, FooterBandKind::Notes));
         assert!(m.footer_bands[0].cells.iter().any(|c| c.text == "500"));
-        // Average of all filtered Sales rows: (100+150+200+50)/4 = 125
-        assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "125"));
+        // Average of displayed pivot values per column (detail rows): (East 250 + West 250) / 2 = 125? no, East=100+150=250, West=200+50=250, mean=250
+        assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "250"));
         let notes = &m.footer_bands[2].cells[0].text;
         assert!(notes.contains("Rows: 4"));
         assert!(notes.contains("Filters: none"));
@@ -793,5 +795,35 @@ mod tests {
         assert!(matches!(m.footer_bands[1].kind, FooterBandKind::GrandTotal));
         assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "300"));
         assert!(m.footer_bands[0].cells[0].text.contains("Filters: Product:Equals"));
+    }
+    #[test]
+    fn ac3_2_average_on_column_count_values() {
+        // Average footer should show mean of displayed/calculated pivot values per column.
+        let t = DataTable {
+            columns: vec![
+                Column { name: "keca".into(), inferred: DataType::String, override_type: None, nullable: false },
+                Column { name: "jk".into(), inferred: DataType::String, override_type: None, nullable: false },
+            ],
+            rows: vec![
+                vec![Value::String("A".into()), Value::String("L".into())],
+                vec![Value::String("A".into()), Value::String("L".into())],
+                vec![Value::String("A".into()), Value::String("P".into())],
+                vec![Value::String("B".into()), Value::String("L".into())],
+                vec![Value::String("B".into()), Value::String("P".into())],
+                vec![Value::String("B".into()), Value::String("P".into())],
+            ],
+            source: Some("test".into()),
+        };
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("keca")],
+            columns: vec![FieldRef::new("jk")],
+            values: vec![ValueField { field: FieldRef::new("keca"), aggregate: Aggregate::Count, display_name: None }],
+            footer_bands: vec![crate::spec::FooterBandSpec::grand_total(), crate::spec::FooterBandSpec::average()],
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        let avg = m.footer_bands.iter().find(|f| matches!(f.kind, FooterBandKind::Average)).unwrap();
+        let texts: Vec<_> = avg.cells.iter().map(|c| c.text.as_str()).collect();
+        assert!(texts.iter().any(|t| *t == "1.5" || *t == "1.50" || *t == "1,5"), "avg row: {:?}", texts);
     }
 }

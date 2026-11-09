@@ -107,10 +107,17 @@ fn new_page(state: &mut PageState) {
 }
 
 fn draw_title(state: &mut PageState, title: &str, ts: &TableStyle) -> Result<()> {
+    if title.trim().is_empty() { return Ok(()); }
     let layer = state.layer();
-    set_fill_color(&layer, ts.title);
-    layer.use_text(sanitize(title), TITLE_SIZE as f32, mm(MARGIN), mm(state.y), &state.font_bold);
-    state.y -= TITLE_SIZE * 0.5 + 4.0;
+    // Ensure visible on PDF white background (some themes may use light title colors).
+    let c = ts.title;
+    let lum = 0.2126 * (c.r() as f32) + 0.7152 * (c.g() as f32) + 0.0722 * (c.b() as f32);
+    let text_color = if lum > 220.0 { egui::Color32::from_rgb(20, 20, 24) } else { c };
+    set_fill_color(&layer, text_color);
+    // printpdf uses bottom-left origin; draw text baseline below current top margin.
+    let y = state.y - (TITLE_SIZE * 0.45);
+    layer.use_text(sanitize(title), TITLE_SIZE as f32, mm(MARGIN), mm(y), &state.font_bold);
+    state.y = y - 4.0;
     Ok(())
 }
 
