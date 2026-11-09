@@ -1,4 +1,4 @@
-[workspace]
+﻿[workspace]
 resolver = "2"
 members = [
     "crates/pivot-core",
@@ -36,9 +36,12 @@ printpdf = "0.7"
 rusqlite = { version = "0.32", features = ["bundled"] }
 mysql = "26"
 keyring = { version = "3", features = ["apple-native","windows-native","linux-native"] }
+# Workspace persistence (decision #5, Phase 7)
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 pivot-core = { path = "crates/pivot-core" }
 pivot-data = { path = "crates/pivot-data" }
 pivot-theme = { path = "crates/pivot-theme" }
 pivot-export = { path = "crates/pivot-export" }
+
 

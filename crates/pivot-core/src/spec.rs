@@ -122,20 +122,23 @@ pub struct FooterBandSpec {
     /// If true, this band is active.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Decimal places for numeric output (e.g. Average). `None` => auto formatting.
+    #[serde(default)]
+    pub decimals: Option<u8>,
 }
 
 impl FooterBandSpec {
     pub fn grand_total() -> Self {
-        Self { kind: crate::model::FooterBandKind::GrandTotal, label: None, aggregate: None, field: None, enabled: true }
+        Self { kind: crate::model::FooterBandKind::GrandTotal, label: None, aggregate: None, field: None, enabled: true, decimals: None }
     }
     pub fn notes() -> Self {
-        Self { kind: crate::model::FooterBandKind::Notes, label: None, aggregate: None, field: None, enabled: true }
+        Self { kind: crate::model::FooterBandKind::Notes, label: None, aggregate: None, field: None, enabled: true, decimals: None }
     }
     pub fn average() -> Self {
-        Self { kind: crate::model::FooterBandKind::Average, label: None, aggregate: Some(Aggregate::Average), field: None, enabled: true }
+        Self { kind: crate::model::FooterBandKind::Average, label: None, aggregate: Some(Aggregate::Average), field: None, enabled: true, decimals: None }
     }
     pub fn count() -> Self {
-        Self { kind: crate::model::FooterBandKind::Count, label: None, aggregate: Some(Aggregate::Count), field: None, enabled: true }
+        Self { kind: crate::model::FooterBandKind::Count, label: None, aggregate: Some(Aggregate::Count), field: None, enabled: true, decimals: None }
     }
     pub fn effective_label(&self) -> String {
         self.effective_label_lang(OutputLanguage::En)

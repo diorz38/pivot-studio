@@ -232,16 +232,32 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                 } else {
                     let mut remove: Option<usize> = None;
                     let mut mov: Option<(usize, usize)> = None;
+                    let mut decimals_change: Option<(usize, Option<u8>)> = None;
                     let len = bands.len();
                     for (i, b) in bands.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(format!("{:?}: {}", b.kind, b.effective_label())).color(t.text).size(12.0));
+                            if matches!(b.kind, pivot_core::FooterBandKind::Average) {
+                                let current = b.decimals.map(|d| d.to_string()).unwrap_or_else(|| "auto".to_string());
+                                egui::ComboBox::from_id_salt(("avg_decimals", i))
+                                    .width(68.0)
+                                    .selected_text(format!("dec: {current}"))
+                                    .show_ui(ui, |ui| {
+                                        for opt in [None, Some(0u8), Some(1), Some(2), Some(3), Some(4), Some(6)] {
+                                            let label = opt.map(|d| d.to_string()).unwrap_or_else(|| "auto".to_string());
+                                            if ui.selectable_label(b.decimals == opt, label).clicked() && b.decimals != opt {
+                                                decimals_change = Some((i, opt));
+                                            }
+                                        }
+                                    });
+                            }
                             if ui.small_button("x").clicked() { remove = Some(i); }
                             if i > 0 && ui.small_button("^").clicked() { mov = Some((i, i - 1)); }
                             if i + 1 < len && ui.small_button("v").clicked() { mov = Some((i, i + 1)); }
                         });
                     }
-                    if let Some(i) = remove { app.remove_footer_band(i); }
+                    if let Some((i, dec)) = decimals_change { app.set_footer_band_decimals(i, dec); }
+                    else if let Some(i) = remove { app.remove_footer_band(i); }
                     else if let Some((a, b)) = mov { app.move_footer_band(a, b); }
                 }
             });

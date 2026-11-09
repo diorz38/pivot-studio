@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "pivot-data"
 version.workspace = true
 edition.workspace = true
@@ -17,8 +17,10 @@ rusqlite = { workspace = true }
 mysql = { workspace = true }
 keyring = { workspace = true }
 serde_json = { workspace = true }
+zip = { workspace = true }
 
 [dev-dependencies]
 rust_xlsxwriter = "0.79"
 tempfile = "3"
 dbase = { workspace = true }
+

@@ -40,11 +40,13 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
             vec![
                 cmd("New Workspace", "file.new"),
                 cmd("Open Workspace...", "file.open"),
+                cmd("Save Workspace", "file.save"),
+                cmd("Save Workspace As...", "file.save_as"),
                 Item::Sep,
                 cmd("Import Data...", "file.import"),
                 cmd("Connect Database...", "data.connect"),
                 Item::Sep,
-                                Item::Sub(
+                Item::Sub(
                     "Export".to_string(),
                     vec![
                         cmd_p("Export as HTML...", "file.export", json!({"format":"html"})),

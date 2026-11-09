@@ -1,4 +1,4 @@
-//! Application state and egui frame/update (DesignCraft pattern, simplified).
+﻿//! Application state and egui frame/update (DesignCraft pattern, simplified).
 
 use crate::{chrome, dock, menus};
 use pivot_core::pivot::compute;
@@ -7,6 +7,7 @@ use pivot_core::{
     ThemedTableModel, Value as CoreValue, ValueField,
 };
 use pivot_data::{FileKind, db_import::{self, CredentialMode, MySqlProfile}};
+use pivot_data::workspace::{self, WorkspaceFile, WorkspaceSource, WorkspaceView};
 use pivot_export::ExportStyle;
 use pivot_theme::{apply, table::TableThemeId, Brightness, Tokens};
 use serde_json::Value;
@@ -23,6 +24,8 @@ pub enum LoadMsg {
 
 pub struct LoadedTable {
     pub name: String,
+    pub path: PathBuf,
+    pub kind: FileKind,
     pub table: DataTable,
 }
 
@@ -92,6 +95,9 @@ pub struct PivotApp {
     pub db_mysql_ssl: bool,
     pub db_mysql_cred_mode_session: bool,
     pub db_source: Option<DbSource>,
+    pub workspace_path: Option<PathBuf>,
+    pub loaded_file_path: Option<PathBuf>,
+    pub loaded_file_kind: Option<FileKind>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +154,9 @@ impl PivotApp {
             db_mysql_ssl: false,
             db_mysql_cred_mode_session: true,
             db_source: None,
+            workspace_path: None,
+            loaded_file_path: None,
+            loaded_file_kind: None,
         }
     }
 
@@ -317,7 +326,7 @@ impl PivotApp {
                         "Loaded {} rows.",
                         table.row_count()
                     )));
-                    let _ = tx.send(LoadMsg::Done(Ok(LoadedTable { name, table })));
+                    let _ = tx.send(LoadMsg::Done(Ok(LoadedTable { name, path, kind, table })));
                 }
                 Err(e) => {
                     let _ = tx.send(LoadMsg::Done(Err(e.to_string())));
@@ -716,6 +725,207 @@ impl PivotApp {
     }
 
 
+    pub fn set_footer_band_decimals(&mut self, idx: usize, decimals: Option<u8>) {
+        self.ensure_explicit_footer_bands();
+        if let Some(b) = self.pivot_spec.footer_bands.get_mut(idx) {
+            b.decimals = decimals;
+            self.status = format!(
+                "Average decimals set to {}.",
+                decimals.map(|d| d.to_string()).unwrap_or_else(|| "auto".to_string())
+            );
+            self.request_pivot_recompute();
+        }
+    }
+
+    fn file_kind_name(kind: FileKind) -> &'static str {
+        match kind {
+            FileKind::Csv => "csv",
+            FileKind::Tsv => "tsv",
+            FileKind::Xlsx => "xlsx",
+            FileKind::Dbf => "dbf",
+        }
+    }
+
+    fn file_kind_from_name(name: Option<&str>) -> Option<FileKind> {
+        match name.unwrap_or("").to_ascii_lowercase().as_str() {
+            "csv" => Some(FileKind::Csv),
+            "tsv" => Some(FileKind::Tsv),
+            "xlsx" => Some(FileKind::Xlsx),
+            "dbf" => Some(FileKind::Dbf),
+            _ => None,
+        }
+    }
+
+    fn build_workspace_file(&self) -> WorkspaceFile {
+        let source = if let Some(db) = &self.db_source {
+            match db {
+                DbSource::Sqlite { path, table } => WorkspaceSource::Sqlite {
+                    path: path.to_string_lossy().to_string(),
+                    table: table.clone(),
+                },
+                DbSource::MySql(profile) => WorkspaceSource::MySql {
+                    profile: profile.sanitized_for_storage(),
+                },
+            }
+        } else if let Some(path) = &self.loaded_file_path {
+            WorkspaceSource::File {
+                path: path.to_string_lossy().to_string(),
+                file_kind: self.loaded_file_kind.map(Self::file_kind_name).map(str::to_string),
+            }
+        } else {
+            WorkspaceSource::None
+        };
+        WorkspaceFile {
+            manifest: pivot_data::WorkspaceManifest::default(),
+            spec: self.pivot_spec.clone(),
+            view: WorkspaceView {
+                brightness_id: Some(self.brightness.id().to_string()),
+                table_theme_id: Some(self.table_theme.id().to_string()),
+                on_home: self.on_home,
+            },
+            source,
+        }
+    }
+
+    fn new_workspace(&mut self) {
+        self.table = None;
+        self.source_name = None;
+        self.loaded_file_path = None;
+        self.loaded_file_kind = None;
+        self.db_source = None;
+        self.pivot_model = None;
+        self.pivot_computing = None;
+        self.pivot_spec = PivotSpec {
+            subtotals: pivot_core::SubtotalConfig { row_subtotals: true, grand_total: true },
+            ..Default::default()
+        };
+        self.workspace_path = None;
+        self.on_home = true;
+        self.status = "New workspace.".to_string();
+    }
+
+    fn save_workspace(&mut self, save_as: bool) {
+        let path = if !save_as {
+            if let Some(p) = &self.workspace_path { Some(p.clone()) } else { None }
+        } else {
+            None
+        };
+        let path = match path {
+            Some(p) => p,
+            None => {
+                let title = self.pivot_model.as_ref().map(|m| m.title.as_str()).unwrap_or("workspace");
+                let default = workspace::suggested_workspace_path(None, title);
+                match rfd::FileDialog::new()
+                    .set_title("Save Pivot Studio Workspace")
+                    .add_filter("Pivot Workspace", &["pivot"])
+                    .set_file_name(default.file_name().and_then(|n| n.to_str()).unwrap_or("workspace.pivot"))
+                    .save_file()
+                {
+                    Some(mut p) => {
+                        if p.extension().and_then(|e| e.to_str()) != Some("pivot") { p.set_extension("pivot"); }
+                        p
+                    }
+                    None => { self.status = "Save workspace cancelled.".to_string(); return; }
+                }
+            }
+        };
+        let ws = self.build_workspace_file();
+        match workspace::save_workspace(&path, &ws) {
+            Ok(()) => {
+                self.workspace_path = Some(path.clone());
+                self.status = format!("Workspace saved: {}", path.display());
+            }
+            Err(e) => self.status = format!("Save workspace failed: {e}"),
+        }
+    }
+
+    fn open_workspace(&mut self) {
+        let path = match rfd::FileDialog::new()
+            .set_title("Open Pivot Studio Workspace")
+            .add_filter("Pivot Workspace", &["pivot"])
+            .pick_file()
+        {
+            Some(p) => p,
+            None => { self.status = "Open workspace cancelled.".to_string(); return; }
+        };
+        let ws = match workspace::load_workspace(&path) {
+            Ok(w) => w,
+            Err(e) => { self.status = format!("Open workspace failed: {e}"); return; }
+        };
+        self.workspace_path = Some(path.clone());
+        self.pivot_spec = ws.spec;
+        if let Some(id) = ws.view.brightness_id.as_deref() {
+            if let Some(b) = Brightness::parse(id) { self.brightness = b; }
+        }
+        if let Some(id) = ws.view.table_theme_id.as_deref() {
+            if let Some(t) = TableThemeId::parse(id) { self.table_theme = t; }
+        }
+        self.on_home = ws.view.on_home;
+        self.table = None;
+        self.source_name = None;
+        self.loaded_file_path = None;
+        self.loaded_file_kind = None;
+        self.db_source = None;
+        self.pivot_model = None;
+        self.pivot_computing = None;
+        self.sync_layout_pickers();
+        match ws.source {
+            WorkspaceSource::None => {
+                self.status = format!("Workspace opened: {} (no data source).", path.display());
+            }
+            WorkspaceSource::File { path: sp, file_kind } => {
+                let sp = PathBuf::from(sp);
+                let kind = Self::file_kind_from_name(file_kind.as_deref()).unwrap_or_else(|| match sp.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase().as_str() {
+                    "tsv" => FileKind::Tsv, "xlsx"|"xls"|"xlsm" => FileKind::Xlsx, "dbf" => FileKind::Dbf, _ => FileKind::Csv,
+                });
+                if sp.exists() {
+                    self.start_load(sp, kind);
+                    self.status = format!("Workspace opened: {}. Reloading data source...", path.display());
+                } else {
+                    self.status = format!("Workspace opened, but data file not found: {}. Import data to continue.", sp.display());
+                    self.on_home = true;
+                }
+            }
+            WorkspaceSource::Sqlite { path: sp, table } => {
+                let sp = PathBuf::from(sp);
+                if sp.exists() {
+                    self.db_source = Some(DbSource::Sqlite { path: sp.clone(), table: table.clone() });
+                    self.db_sqlite_path = sp.to_string_lossy().to_string();
+                    self.db_sqlite_table = table.clone();
+                    match db_import::connect_and_preview_sqlite(&sp, &table, 200, None) {
+                        Ok(t) => {
+                            self.table = Some(t);
+                            self.source_name = Some(format!("sqlite:{}:{}", sp.display(), table));
+                            self.on_home = false;
+                            self.status = format!("Workspace opened (SQLite {} / {}).", sp.display(), table);
+                            self.sync_layout_pickers();
+                            self.request_pivot_recompute();
+                        }
+                        Err(e) => self.status = format!("Workspace opened (SQLite), preview failed: {e}. Reconnect in Database panel."),
+                    }
+                } else {
+                    self.status = format!("Workspace opened, SQLite file not found: {}. Reconnect in Database panel.", sp.display());
+                }
+            }
+            WorkspaceSource::MySql { profile } => {
+                let msg = match profile.credential_mode {
+                    CredentialMode::SessionOnly => "enter password (session-only) and preview.",
+                    CredentialMode::OsKeychain => "stored in OS keychain if available; preview to reconnect.",
+                };
+                self.db_source = Some(DbSource::MySql(profile.clone()));
+                self.db_mysql_host = profile.host;
+                self.db_mysql_port = profile.port.to_string();
+                self.db_mysql_db = profile.database;
+                self.db_mysql_user = profile.user;
+                self.db_mysql_table = profile.table;
+                self.db_mysql_ssl = profile.ssl;
+                self.db_mysql_cred_mode_session = matches!(profile.credential_mode, CredentialMode::SessionOnly);
+                self.db_panel_open = true;
+                self.on_home = false;
+                self.status = format!("Workspace opened (MySQL profile, no password stored): {msg}");
+            }
+        }
+    }
     pub fn export_pivot(&mut self, format: &str) {
         if self.exporting.is_some() {
             self.status = "An export is already in progress.".to_string();
@@ -804,10 +1014,10 @@ impl PivotApp {
             "file.import" | "file.import.csv" => self.pick_and_load(FileKind::Csv),
             "file.import.xlsx" => self.pick_and_load(FileKind::Xlsx),
             "file.import.dbf" => self.pick_and_load(FileKind::Dbf),
-            "file.open" => {
-                self.on_home = false;
-                self.status = "Open Workspace (.pivot) is a placeholder (Phase 7).".to_string();
-            }
+            "file.new" => self.new_workspace(),
+            "file.open" => self.open_workspace(),
+            "file.save" => self.save_workspace(false),
+            "file.save_as" => self.save_workspace(true),
             "data.connect" => {
                 self.on_home = false;
                 self.db_panel_open = true;
