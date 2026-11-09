@@ -1,4 +1,4 @@
-﻿use crate::ExportStyle;
+use crate::ExportStyle;
 use pivot_core::{Cell, CellRole, FooterBandKind, ThemedTableModel};
 use pivot_theme::table::{RoleStyle, TableStyle};
 
@@ -119,7 +119,7 @@ fn looks_numeric(text: &str) -> bool {
 
 fn cell_role_style(role: CellRole, ts: &TableStyle, zebra: bool) -> RoleStyle {
     match role {
-        CellRole::Title => RoleStyle { fill: ts.body.fill, text: ts.title, strong: true, grid_line: ts.border },
+        CellRole::Title => RoleStyle { fill: ts.body.fill, text: ts.title, strong: true, grid_line: ts.border, border_mode: pivot_theme::table::CellBorderMode::None },
         CellRole::StubHead => ts.stub_head,
         CellRole::ColHeader => ts.col_header,
         CellRole::RowHeader => ts.row_header,

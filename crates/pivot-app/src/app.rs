@@ -1,4 +1,4 @@
-﻿//! Application state and egui frame/update (DesignCraft pattern, simplified).
+//! Application state and egui frame/update (DesignCraft pattern, simplified).
 
 use crate::{chrome, dock, menus};
 use pivot_core::pivot::compute;
@@ -457,48 +457,14 @@ impl PivotApp {
     }
 
     pub fn db_apply_mysql_profile(&mut self) -> Option<MySqlProfile> {
-        let port: u16 = self.db_mysql_port.trim().parse().unwrap_or(3306);
-        let mut profile = MySqlProfile {
-            host: self.db_mysql_host.trim().to_string(),
-            port,
-            database: self.db_mysql_db.trim().to_string(),
-            user: self.db_mysql_user.trim().to_string(),
-            table: self.db_mysql_table.trim().to_string(),
-            ssl: self.db_mysql_ssl,
-            credential_mode: self.mysql_credential_mode(),
-            credential_ref: String::new(),
-        };
-        if profile.host.is_empty() || profile.database.is_empty() || profile.user.is_empty() || profile.table.is_empty() {
-            self.status = "MySQL: host, database, user, and table are required.".to_string();
-            return None;
-        }
-        profile.credential_ref = profile.key_ref();
-        let mode = profile.credential_mode;
-        if !self.db_mysql_password.is_empty() {
-            if let Err(e) = db_import::store_secret(mode, &profile.credential_ref, &self.db_mysql_password) {
-                self.status = format!("Credential store failed ({mode:?}): {e}");
-                return None;
-            }
-            // Secrets are stored in session/keychain only; MySqlProfile serialized for .pivot must be sanitized and never include the password.
-        }
-        Some(profile)
+        self.status = "MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string();
+        None
     }
 
     pub fn db_preview_mysql(&mut self) {
-        let Some(profile) = self.db_apply_mysql_profile() else { return; };
-        match db_import::preview_mysql(&profile, 500, None) {
-            Ok(t) => {
-                self.source_name = Some(format!("mysql:{}:{}/{}", profile.host, profile.database, profile.table));
-                self.table = Some(t);
-                self.db_source = Some(DbSource::MySql(profile));
-                self.pivot_model = None;
-                self.sync_layout_pickers();
-                self.status = format!("Loaded MySQL preview ({} rows, {} cols). Recompute uses pushdown SQL (GROUP BY).", self.row_count(), self.col_count());
-                self.on_home = false;
-            }
-            Err(e) => self.status = format!("MySQL preview/connect failed: {e}"),
-        }
+        self.status = "MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string();
     }
+
     pub fn request_pivot_recompute(&mut self) {
         if self.table.is_none() && self.db_source.is_none() {
             self.status = "Load data before computing a pivot.".to_string();
@@ -908,7 +874,7 @@ impl PivotApp {
                 }
             }
             WorkspaceSource::MySql { profile } => {
-                let msg = match profile.credential_mode {
+                let _msg = match profile.credential_mode {
                     CredentialMode::SessionOnly => "enter password (session-only) and preview.",
                     CredentialMode::OsKeychain => "stored in OS keychain if available; preview to reconnect.",
                 };
@@ -922,7 +888,7 @@ impl PivotApp {
                 self.db_mysql_cred_mode_session = matches!(profile.credential_mode, CredentialMode::SessionOnly);
                 self.db_panel_open = true;
                 self.on_home = false;
-                self.status = format!("Workspace opened (MySQL profile, no password stored): {msg}");
+                self.status = "Workspace has a MySQL source, but MySQL is temporarily disabled. Use CSV/XLSX/DBF or SQLite.".to_string(); self.db_panel_open = false;
             }
         }
     }
@@ -1021,7 +987,7 @@ impl PivotApp {
             "data.connect" => {
                 self.on_home = false;
                 self.db_panel_open = true;
-                self.status = "Database: configure SQLite or MySQL, preview data, and compute pivots via pushdown (Phase 5).".to_string();
+                self.status = "Database: connect to SQLite and compute pivots via pushdown. Supported now: CSV, XLSX, DBF, SQLite. MySQL temporarily disabled.".to_string(); self.db_tab_mysql = false;
             }
             "file.export" => {
                 let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string();
@@ -1059,7 +1025,7 @@ impl PivotApp {
                 self.status = "Layout reset (placeholder).".to_string();
             }
             "help.about" => {
-                self.status = "Pivot Studio (Phase 3/4) - polished pivot model + table themes. See PIVOT_STUDIO_PLAN.md.".to_string();
+                self.status = "Pivot Studio - polished pivot tables (CSV/XLSX/DBF/SQLite), themes, export, .pivot workspace. MySQL temporarily disabled.".to_string();
             }
             _ => {
                 self.status = format!("Command '{id}' is a placeholder.");

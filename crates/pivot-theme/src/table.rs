@@ -15,16 +15,19 @@ pub enum TableThemeId {
     Executive,
     CompactDense,
     HighContrast,
+    /// Horizontal rules for header/footer bands; body values without grid borders.
+    HorizontalRules,
 }
 
 impl TableThemeId {
-    pub const ALL: [TableThemeId; 6] = [
+    pub const ALL: [TableThemeId; 7] = [
         TableThemeId::ClassicGrid,
         TableThemeId::Ledger,
         TableThemeId::Minimal,
         TableThemeId::Executive,
         TableThemeId::CompactDense,
         TableThemeId::HighContrast,
+        TableThemeId::HorizontalRules,
     ];
 
     pub fn id(self) -> &'static str {
@@ -35,6 +38,7 @@ impl TableThemeId {
             TableThemeId::Executive => "executive",
             TableThemeId::CompactDense => "compactDense",
             TableThemeId::HighContrast => "highContrast",
+            TableThemeId::HorizontalRules => "horizontalRules",
         }
     }
 
@@ -46,6 +50,7 @@ impl TableThemeId {
             TableThemeId::Executive => "Executive Accent",
             TableThemeId::CompactDense => "Compact Dense",
             TableThemeId::HighContrast => "High Contrast",
+            TableThemeId::HorizontalRules => "Horizontal Rules (header/footer)",
         }
     }
 
@@ -56,12 +61,21 @@ impl TableThemeId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellBorderMode {
+    #[default]
+    All,
+    HorizontalOnly,
+    None,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RoleStyle {
     pub fill: Color32,
     pub text: Color32,
     pub strong: bool,
     pub grid_line: Color32,
+    pub border_mode: CellBorderMode,
 }
 
 /// Fully resolved table style roles for the current app brightness + table theme.
@@ -80,6 +94,7 @@ pub struct TableStyle {
     pub notes: RoleStyle,
     pub selection: Color32,
     pub border: Color32,
+    pub outer_border: bool,
     pub zebra: bool,
     pub row_height: f32,
     pub header_height: f32,
@@ -111,26 +126,31 @@ impl TableStyle {
             (TableThemeId::Executive, false) => (hex(0x1f4e79), Color32::WHITE, blend(t.grid_body, hex(0xe8f0fa), 0.45), hex(0xd4e4f7), t.text_muted, false),
             (TableThemeId::CompactDense, true) => (hex(0x3b4454), t.text_strong, blend(t.grid_body, t.panel, 0.4), hex(0x454f61), t.text_muted, true),
             (TableThemeId::CompactDense, false) => (hex(0xd5dde8), hex(0x0f172a), blend(t.grid_body, hex(0xe7edf5), 0.55), hex(0xc8d3e2), t.text_muted, true),
+            (TableThemeId::HorizontalRules, true) => (hex(0x2f3745), t.text_strong, t.grid_body, hex(0x3a4558), t.text_muted, false),
+            (TableThemeId::HorizontalRules, false) => (hex(0xe6edf7), hex(0x102a56), t.grid_body, hex(0xd8e5f6), t.text_muted, false),
             (TableThemeId::HighContrast, _) => unreachable!(),
         };
         let grid_line = if id == TableThemeId::Minimal { blend(t.grid_line, t.panel, 0.35) } else { t.grid_line };
         let row_h = if id == TableThemeId::CompactDense { 24.0 } else { 28.0 };
         let header_h = if id == TableThemeId::CompactDense { 26.0 } else { 30.0 };
-        let role = |fill, text, strong| RoleStyle { fill, text, strong, grid_line };
+        let border_mode = if id == TableThemeId::HorizontalRules { CellBorderMode::HorizontalOnly } else { CellBorderMode::All };
+        let body_border = if id == TableThemeId::HorizontalRules { CellBorderMode::None } else { border_mode };
+        let role = |fill, text, strong, bm| RoleStyle { fill, text, strong, grid_line, border_mode: bm };
         Self {
             id,
             title: t.text_strong,
-            stub_head: role(header_fill, header_text, true),
-            col_header: role(header_fill, header_text, true),
-            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.35 }), if id == TableThemeId::Executive && !t.dark { header_text } else { t.text_strong }, true),
-            body: role(t.grid_body, t.text, false),
-            body_zebra: role(zebra_fill, t.text, false),
-            subtotal: role(blend(total_fill, header_fill, 0.45), t.text_strong, true),
-            grand_total: role(total_fill, if id == TableThemeId::Executive && t.dark { Color32::WHITE } else { t.text_strong }, true),
-            footer: role(blend(total_fill, t.panel_alt, 0.6), t.text_strong, true),
-            notes: role(t.panel_alt, notes_text, false),
+            stub_head: role(header_fill, header_text, true, border_mode),
+            col_header: role(header_fill, header_text, true, border_mode),
+            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.35 }), if id == TableThemeId::Executive && !t.dark { header_text } else { t.text_strong }, true, border_mode),
+            body: role(t.grid_body, t.text, false, body_border),
+            body_zebra: role(zebra_fill, t.text, false, body_border),
+            subtotal: role(blend(total_fill, header_fill, 0.45), t.text_strong, true, border_mode),
+            grand_total: role(total_fill, if id == TableThemeId::Executive && t.dark { Color32::WHITE } else { t.text_strong }, true, border_mode),
+            footer: role(blend(total_fill, t.panel_alt, 0.6), t.text_strong, true, border_mode),
+            notes: role(t.panel_alt, notes_text, false, border_mode),
             selection: t.selection,
             border: t.border,
+            outer_border: id != TableThemeId::HorizontalRules,
             zebra,
             row_height: row_h,
             header_height: header_h,
@@ -138,7 +158,13 @@ impl TableStyle {
     }
 
     fn high_contrast(t: &Tokens) -> Self {
-        let role = |fill, text, strong| RoleStyle { fill, text, strong, grid_line: Color32::WHITE };
+        let role = |fill, text, strong| RoleStyle {
+            fill,
+            text,
+            strong,
+            grid_line: Color32::WHITE,
+            border_mode: CellBorderMode::All,
+        };
         Self {
             id: TableThemeId::HighContrast,
             title: Color32::WHITE,
@@ -153,6 +179,7 @@ impl TableStyle {
             notes: role(Color32::BLACK, hex(0x00ffff), false),
             selection: t.selection,
             border: Color32::WHITE,
+            outer_border: true,
             zebra: true,
             row_height: 28.0,
             header_height: 30.0,
@@ -170,7 +197,13 @@ impl TableStyle {
             Role::GrandTotal => self.grand_total,
             Role::Footer => self.footer,
             Role::Notes => self.notes,
-            Role::Title => RoleStyle { fill: self.body.fill, text: self.title, strong: true, grid_line: self.border },
+            Role::Title => RoleStyle {
+                fill: self.body.fill,
+                text: self.title,
+                strong: true,
+                grid_line: self.border,
+                border_mode: CellBorderMode::None,
+            },
         }
     }
 }
@@ -198,7 +231,7 @@ mod tests {
 
     #[test]
     fn theme_ids_stable() {
-        assert_eq!(TableThemeId::ALL.len(), 6);
+        assert_eq!(TableThemeId::ALL.len(), 7);
         for t in TableThemeId::ALL {
             assert_eq!(TableThemeId::parse(t.id()), Some(t));
             assert_eq!(TableThemeId::parse(t.label()), Some(t));

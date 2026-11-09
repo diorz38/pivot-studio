@@ -74,7 +74,7 @@ pub struct ValueField {
 
 impl ValueField {
     pub fn auto_name(&self) -> String {
-        format!("{} of {}", self.aggregate.label(), self.field.name)
+        self.field.name.clone()
     }
     pub fn effective_name(&self) -> String {
         self.display_name.clone().unwrap_or_else(|| self.auto_name())

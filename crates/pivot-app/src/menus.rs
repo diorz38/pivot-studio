@@ -44,7 +44,7 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
                 cmd("Save Workspace As...", "file.save_as"),
                 Item::Sep,
                 cmd("Import Data...", "file.import"),
-                cmd("Connect Database...", "data.connect"),
+                cmd("Connect SQLite...", "data.connect"),
                 Item::Sep,
                 Item::Sub(
                     "Export".to_string(),
@@ -92,6 +92,7 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
                         cmd_p("Minimal", "format.theme", json!({"id":"minimal"})),
                         cmd_p("Executive Accent", "format.theme", json!({"id":"executive"})),
                         cmd_p("Compact Dense", "format.theme", json!({"id":"compactDense"})),
+                        cmd_p("Horizontal Rules (header/footer)", "format.theme", json!({"id":"horizontalRules"})),
                         cmd_p("High Contrast", "format.theme", json!({"id":"highContrast"})),
                     ],
                 ),

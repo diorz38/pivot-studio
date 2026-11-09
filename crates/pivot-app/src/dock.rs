@@ -54,7 +54,7 @@ fn home_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                         action_card(ui, app, &t, "Import CSV", "Load a CSV/TSV file into a worksheet.", "file.import.csv");
                         action_card(ui, app, &t, "Import Excel", "Load an .xlsx workbook (first sheet).", "file.import.xlsx");
                         action_card(ui, app, &t, "Import DBF", "Load a dBASE (.dbf) file.", "file.import.dbf");
-                        action_card(ui, app, &t, "Connect Database", "Create a new SQLite or MySQL connection (Phase 5).", "data.connect");
+                        action_card(ui, app, &t, "Connect SQLite", "Connect to a SQLite database (pushdown). MySQL temporarily disabled.", "data.connect");
                         if app.table.is_some() {
                             action_card(ui, app, &t, "Open Worksheet", "View data and build a pivot.", "nav.worksheet");
                         }
@@ -96,36 +96,28 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
 
     egui::TopBottomPanel::bottom("dock_bottom")
         .resizable(true)
-        .default_height(210.0)
-        .min_height(90.0)
+        .default_height(170.0)
+        .min_height(80.0)
         .frame(egui::Frame::new().fill(t.panel_alt).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
         .show_inside(ui, |ui| {
-            panel_header(ui, "Filters / Data Preview", &t);
+            panel_header(ui, "Data Source / Filters", &t);
             ui.add_space(2.0);
-            if app.table.is_some() {
-                filters_ui(app, ui, &t);
-                ui.separator();
-            }
-            if let Some(table) = &app.table {
-                let preview_rows = table.row_count().min(60);
-                egui::ScrollArea::both().auto_shrink([false, false]).max_height(110.0).id_salt("data_preview_bottom").show(ui, |ui| {
-                    egui::Grid::new("data_preview_grid").striped(false).min_col_width(90.0).show(ui, |ui| {
-                        for col in &table.columns { header_cell(ui, &col.name, &t); }
-                        ui.end_row();
-                        for r in 0..preview_rows {
-                            for c in 0..table.column_count() {
-                                let text = table.get(r, c).map(|v| v.as_display()).unwrap_or_default();
-                                body_cell(ui, &text, &t, false);
-                            }
-                            ui.end_row();
-                        }
-                    });
-                });
-                if table.row_count() > preview_rows {
-                    ui.label(RichText::new(format!("Showing {preview_rows} of {} rows.", table.row_count())).color(t.text_muted).size(11.0));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Data source:").color(t.text_muted));
+                let mut src = app.source_name.clone().unwrap_or_default();
+                if ui.add(egui::TextEdit::singleline(&mut src).hint_text("e.g. my_data.csv or Sales table").desired_width(320.0)).changed() {
+                    app.source_name = if src.trim().is_empty() { None } else { Some(src) };
+                    if app.table.is_some() || app.db_source.is_some() {
+                        app.request_pivot_recompute();
+                    }
                 }
+                ui.label(RichText::new("Editable label shown in pivot output Notes.").color(t.text_disabled).size(10.5));
+            });
+            ui.add_space(4.0);
+            if app.table.is_some() || app.db_source.is_some() {
+                filters_ui(app, ui, &t);
             } else {
-                ui.label(RichText::new("Import data to see filters and a preview.").color(t.text_muted));
+                ui.label(RichText::new("Import data (CSV/XLSX/DBF) or connect SQLite to configure filters.").color(t.text_muted));
             }
         });
 
@@ -444,20 +436,7 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
             });
 
         ui.add_space(8.0);
-        ui.label(RichText::new("Data preview (raw rows)").color(t.text_muted).size(12.0));
-        let preview_rows = table.row_count().min(120);
-        egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Grid::new("data_preview_center").striped(false).min_col_width(100.0).show(ui, |ui| {
-                for col in &table.columns { header_cell(ui, &col.name, t); }
-                ui.end_row();
-                for r in 0..preview_rows {
-                    for c in 0..table.column_count() {
-                        body_cell(ui, &table.get(r, c).map(|v| v.as_display()).unwrap_or_default(), t, false);
-                    }
-                    ui.end_row();
-                }
-            });
-        });
+        ui.label(RichText::new(format!("Data loaded: {} rows × {} cols. Raw data preview hidden; use pivot layout and filters.", table.row_count(), table.column_count())).color(t.text_muted).size(11.0));
     } else {
         ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
         ui.label(RichText::new("Import data from Home to begin.").color(t.text_muted));

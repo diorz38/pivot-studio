@@ -405,7 +405,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 let filter_summary = if spec.filters.is_empty() {
                     String::new()
                 } else {
-                    spec.filters.iter().map(|f| format!("{}:{:?}", f.field.name, f.op)).collect::<Vec<_>>().join(", ")
+                    spec.filters.iter().map(|f| format_filter_readable(f, lang)).collect::<Vec<_>>().join("; ")
                 };
                 let note = notes_text(lang, &src, table.row_count(), &filter_summary);
                 frow.push(Cell::span(note, CellRole::Footer, total_cols, 1));
@@ -628,14 +628,30 @@ fn default_stub_head(spec: &PivotSpec, lang: crate::spec::OutputLanguage) -> Str
     }
 }
 
+fn format_filter_readable(f: &crate::spec::Filter, lang: crate::spec::OutputLanguage) -> String {
+    use crate::spec::{FilterOp, OutputLanguage::*};
+    let vals = f.values.iter().map(|v| v.as_display()).collect::<Vec<_>>().join(", ");
+    let (eq, neq, inc, exc) = match lang {
+        En => ("=", "≠", "in", "not in"),
+        Id => ("=", "≠", "termasuk", "tidak termasuk"),
+        IdEn => ("=", "≠", "in/termasuk", "not in/tidak termasuk"),
+    };
+    match f.op {
+        FilterOp::Equals => format!("{} {} {}", f.field.name, eq, vals),
+        FilterOp::NotEquals => format!("{} {} {}", f.field.name, neq, vals),
+        FilterOp::Include => format!("{} {} [{}]", f.field.name, inc, vals),
+        FilterOp::Exclude => format!("{} {} [{}]", f.field.name, exc, vals),
+    }
+}
+
 fn notes_text(lang: crate::spec::OutputLanguage, source: &str, rows: usize, filter_summary: &str) -> String {
     use crate::spec::OutputLanguage::*;
     let none = match lang { En => "none", Id => "tidak ada", IdEn => "none / tidak ada" };
     let filters = if filter_summary.trim().is_empty() { none } else { filter_summary };
     match lang {
-        En => format!("Source: {source} | Rows: {rows} | Filters: {filters}"),
-        Id => format!("Sumber: {source} | Baris: {rows} | Filter: {filters}"),
-        IdEn => format!("Source / Sumber: {source} | Rows / Baris: {rows} | Filters / Filter: {filters}"),
+        En => format!("Data source: {source} | Rows: {rows} | Filters: {filters}"),
+        Id => format!("Sumber data: {source} | Baris: {rows} | Filter: {filters}"),
+        IdEn => format!("Data source / Sumber data: {source} | Rows / Baris: {rows} | Filters / Filter: {filters}"),
     }
 }
 
@@ -939,7 +955,10 @@ mod tests {
         assert!(matches!(m.footer_bands[0].kind, FooterBandKind::Notes));
         assert!(matches!(m.footer_bands[1].kind, FooterBandKind::GrandTotal));
         assert!(m.footer_bands[1].cells.iter().any(|c| c.text == "300"));
-        assert!(m.footer_bands[0].cells[0].text.contains("Filters: Product:Equals"));
+        let note = &m.footer_bands[0].cells[0].text;
+        assert!(note.contains("Filters"), "note: {note}");
+        assert!(note.contains("Product"), "note: {note}");
+        assert!(note.contains("A"), "note: {note}");
     }
     #[test]
     fn ac3_2_average_on_column_count_values() {

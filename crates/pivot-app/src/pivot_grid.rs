@@ -3,7 +3,7 @@
 
 use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use pivot_core::model::{CellRole, ThemedTableModel};
-use pivot_theme::table::{TableStyle, TableThemeId};
+use pivot_theme::table::{CellBorderMode, TableStyle, TableThemeId};
 use pivot_theme::{Brightness, Tokens};
 
 const PAD_X: f32 = 8.0;
@@ -150,6 +150,19 @@ pub fn show(ui: &mut Ui, model: &ThemedTableModel, t: &Tokens, brightness: Brigh
     ui.ctx().request_repaint(); // keep resize/offset in sync feeling responsive
 }
 
+fn paint_cell_border(painter: &egui::Painter, rect: Rect, rs: &pivot_theme::table::RoleStyle) {
+    match rs.border_mode {
+        CellBorderMode::All => {
+            painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+        }
+        CellBorderMode::HorizontalOnly => {
+            let s = Stroke::new(1.0_f32, rs.grid_line);
+            painter.line_segment([rect.left_top(), rect.right_top()], s);
+            painter.line_segment([rect.left_bottom(), rect.right_bottom()], s);
+        }
+        CellBorderMode::None => {}
+    }
+}
 fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_widths: &[f32], rect: Rect, x_offset: f32, header_h_unit: f32) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, style.col_header.fill);
@@ -177,7 +190,7 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_width
             if vis.is_positive() {
                 let rs_style = role_style_for(style, cell.role, false);
                 painter.rect_filled(cell_rect, 0.0, rs_style.fill);
-                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs_style.grid_line), StrokeKind::Inside);
+                paint_cell_border(&painter, cell_rect, &rs_style);
                 let text_color = rs_style.text;
                 let galley = painter.layout_no_wrap(truncate(&cell.text, 60), FontId::proportional(13.0), text_color);
                 let tx = (cell_rect.min.x + PAD_X).min(cell_rect.max.x - 4.0);
@@ -187,7 +200,9 @@ fn paint_header(ui: &Ui, model: &ThemedTableModel, style: &TableStyle, col_width
             ci += cs;
         }
     }
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, style.border), StrokeKind::Inside);
+    if style.outer_border {
+        painter.rect_stroke(rect, 0.0, Stroke::new(1.0_f32, style.border), StrokeKind::Inside);
+    }
 }
 
 fn handle_resize(ui: &Ui, col_widths: &mut [f32], header_rect: Rect, x_offset: f32, col_count: usize) {
@@ -224,7 +239,7 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
             let rs = role_style_for(style, cell.role, zebra);
             let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
             painter.rect_filled(cell_rect, 0.0, bg);
-            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+            paint_cell_border(painter, cell_rect, &rs);
             let indent = if matches!(cell.role, CellRole::RowHeader) { cell.indent as f32 * 12.0 } else { 0.0 };
             let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
             let tx = (cell_rect.min.x + PAD_X + indent).min(cell_rect.max.x - 4.0);
@@ -247,7 +262,7 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
             let rs = if band.kind == pivot_core::model::FooterBandKind::Notes { style.notes } else { role_style_for(style, cell.role, false) };
             let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
             painter.rect_filled(cell_rect, 0.0, bg);
-            painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+            paint_cell_border(painter, cell_rect, &rs);
             let galley = painter.layout_no_wrap(truncate(&cell.text, 160), FontId::proportional(12.0), rs.text);
             painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
         } else {
@@ -261,7 +276,7 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
                 let rs = role_style_for(style, cell.role, false);
                 let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
                 painter.rect_filled(cell_rect, 0.0, bg);
-                painter.rect_stroke(cell_rect, 0.0, Stroke::new(1.0_f32, rs.grid_line), StrokeKind::Inside);
+                paint_cell_border(painter, cell_rect, &rs);
                 let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
                 painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
                 ci += cs;

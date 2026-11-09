@@ -208,7 +208,7 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                                 format!("DB:sqlite/{table}")
                             }
                             crate::app::DbSource::MySql(p) => {
-                                format!("DB:mysql/{}/{}", p.database, p.table)
+                                format!("DB:mysql(disabled)/{}/{}", p.database, p.table)
                             }
                         }
                     } else {
