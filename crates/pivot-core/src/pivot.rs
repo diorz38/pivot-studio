@@ -225,8 +225,11 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
             }
             header_rows.push(hr);
         }
-        if !effective_values.is_empty() && (levels > 0) {
+        if !effective_values.is_empty() && levels > 0 && effective_values.len() > 1 {
             let mut hr = Vec::new();
+            for _ in 0..row_header_cols {
+                hr.push(Cell::new("", CellRole::RowHeader));
+            }
             for ck in &col_key_vec {
                 for name in &effective_values {
                     let _ = ck;
@@ -234,8 +237,6 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 }
             }
             header_rows.push(hr);
-        } else if effective_values.is_empty() {
-            // ensure body column count matches
         }
     }
 
@@ -412,30 +413,54 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 if spec.columns.is_empty() {
                     for (vi, (ci, vf)) in value_fields.iter().enumerate() {
                         let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
-                        // compute over all filtered rows for this field
-                        let mut acc = Accum::default();
-                        for r in 0..table.row_count() {
-                            if !passes_filters(table, r, &spec.filters, &idx) { continue; }
-                            let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
-                            acc.push(&v, a);
-                        }
-                        let _ = vi;
-                        frow.push(Cell::new(acc.finish(a).as_display(), role.clone()));
-                    }
-                } else {
-                    // per column key
-                    for ck in &col_key_vec {
-                        for (_vi, (ci, vf)) in value_fields.iter().enumerate() {
-                            let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
+                        if a == Aggregate::Average && use_band_agg && band_spec.aggregate.is_none() && band_spec.field.is_none() && matches!(band_spec.kind, FooterBandKind::Average) {
+                            let mut sum = 0.0_f64; let mut n = 0_i64;
+                            let empty_ck = Key(vec![]);
+                            for rk in &row_key_vec {
+                                if let Some(acc) = cells.get(&(rk.clone(), empty_ck.clone(), vi)) {
+                                    let v = acc.finish(vf.aggregate);
+                                    if let Some(num) = numeric(&v) { sum += num; n += 1; }
+                                }
+                            }
+                            let text = if n > 0 { numeric_value(sum / n as f64).as_display() } else { String::new() };
+                            frow.push(Cell::new(text, role.clone()));
+                        } else {
                             let mut acc = Accum::default();
                             for r in 0..table.row_count() {
                                 if !passes_filters(table, r, &spec.filters, &idx) { continue; }
-                                let rck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&cci| cell_text(table, r, cci)).collect() });
-                                if &rck != ck { continue; }
                                 let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
                                 acc.push(&v, a);
                             }
                             frow.push(Cell::new(acc.finish(a).as_display(), role.clone()));
+                        }
+                    }
+                } else {
+                    // per column key
+                    for ck in &col_key_vec {
+                        for (vi, (ci, vf)) in value_fields.iter().enumerate() {
+                            let a = if use_band_agg && band_spec.field.as_deref().map(|n| n == vf.field.name).unwrap_or(band_spec.field.is_none()) { agg } else { vf.aggregate };
+                            if a == Aggregate::Average && use_band_agg && band_spec.aggregate.is_none() && band_spec.field.is_none() && matches!(band_spec.kind, FooterBandKind::Average) {
+                                // Average of displayed/calculated pivot values in this column (body rows), excluding subtotals/grand totals.
+                                let mut sum = 0.0_f64; let mut n = 0_i64;
+                                for rk in &row_key_vec {
+                                    if let Some(acc) = cells.get(&(rk.clone(), ck.clone(), vi)) {
+                                        let v = acc.finish(vf.aggregate);
+                                        if let Some(num) = numeric(&v) { sum += num; n += 1; }
+                                    }
+                                }
+                                let text = if n > 0 { numeric_value(sum / n as f64).as_display() } else { String::new() };
+                                frow.push(Cell::new(text, role.clone()));
+                            } else {
+                                let mut acc = Accum::default();
+                                for r in 0..table.row_count() {
+                                    if !passes_filters(table, r, &spec.filters, &idx) { continue; }
+                                    let rck = Key(if col_fields.is_empty() { vec![] } else { col_fields.iter().map(|&cci| cell_text(table, r, cci)).collect() });
+                                    if &rck != ck { continue; }
+                                    let v = table.get(r, *ci).cloned().unwrap_or(Value::Null);
+                                    acc.push(&v, a);
+                                }
+                                frow.push(Cell::new(acc.finish(a).as_display(), role.clone()));
+                            }
                         }
                     }
                 }
