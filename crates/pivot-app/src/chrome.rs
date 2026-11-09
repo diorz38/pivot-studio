@@ -35,7 +35,7 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 caption_buttons(app, ui);
                 ui.add_space(8.0);
-                ui.label(egui::RichText::new(format!("v0.1.0 • {}", app.brightness.label())).color(t.text_muted).size(11.5));
+                ui.label(egui::RichText::new(format!("v0.2.0 • {}", app.brightness.label())).color(t.text_muted).size(11.5));
                 let drag_w = ui.available_width().max(40.0);
                 let (drag_rect, drag_resp) = ui.allocate_exact_size(egui::vec2(drag_w, height), Sense::click_and_drag());
                 let _ = drag_rect;

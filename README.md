@@ -2,11 +2,11 @@
 
 A desktop pivot-table application (Windows / macOS / Linux) built with **Rust + egui/eframe**.
 
-Pivot Studio ingests data from heterogeneous sources (CSV/XLSX/DBF/SQLite/MySQL), computes pivot layouts (rows / columns / values / filters), and produces **polished, presentation-ready tables** — editable header column 1 (stub-head), multiple footer bands, diverse table themes, and dynamic titles — exportable to **XLSX/PDF/HTML with the same theme**.
+Pivot Studio ingests data from heterogeneous sources (CSV/XLSX/DBF/SQLite; MySQL profile restore is currently disabled in this build), computes pivot layouts (rows / columns / values / filters), and produces **polished, presentation-ready tables** — editable header column 1 (stub-head), multiple footer bands, diverse table themes, and dynamic titles — exportable to **XLSX/PDF/HTML with the same theme**.
 
 ## Status
 
-**Phase 0 (in progress):** repository restructure and egui shell. See [PIVOT_STUDIO_PLAN.md](PIVOT_STUDIO_PLAN.md) for the phased plan and acceptance criteria.
+**v0.2.0** (on `feature/source-mgmt-multi-worksheet`): source-data column selection (pre-worksheet management page), multi-worksheet projects (`.pivot` workspace v2 with v1 migration), XLSX multi-sheet export, HTML tabbed export, PDF export of the active sheet (recompute between sheets as needed), themes/brightness, and dev-mode terminal instrumentation (`[pivot-dev]`). See [PIVOT_STUDIO_PLAN.md](PIVOT_STUDIO_PLAN.md) and [V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md](V0_1_0_SOURCE_MULTI_WORKSHEET_PLAN.md).
 
 ## Workspace
 

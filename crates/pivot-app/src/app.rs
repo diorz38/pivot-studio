@@ -1068,7 +1068,7 @@ impl PivotApp {
             "format.color_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = TableColorThemeId::parse(id) { self.table_color_theme = theme; self.status = format!("Color theme set to {}.", theme.label()); } } }
             "format.border_theme" => { if let Some(id) = params.get("id").and_then(|v| v.as_str()) { if let Some(theme) = BorderThemeId::parse(id) { self.table_border_theme = theme; self.status = format!("Border theme set to {}.", theme.label()); } } }
             "view.reset_layout" => { self.status = "Layout reset (placeholder).".to_string(); }
-            "help.about" => { self.status = "Pivot Studio - polished pivot tables (CSV/XLSX/DBF/SQLite), source column selection, multi-worksheet projects, themes, export, .pivot workspace.".to_string(); }
+            "help.about" => { self.status = "Pivot Studio v0.2.0 - polished pivot tables (CSV/XLSX/DBF/SQLite), source column selection, multi-worksheet projects, themes, export, .pivot workspace. Recompute between sheets as needed; PDF exports the active sheet.".to_string(); }
             _ => { self.status = format!("Command '{id}' is a placeholder."); }
         }
     }
