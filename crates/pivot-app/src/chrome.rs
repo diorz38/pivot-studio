@@ -1,4 +1,4 @@
-﻿  //! App bar and status bar (DesignCraft chrome pattern, original code).
+  //! App bar and status bar (DesignCraft chrome pattern, original code).
 //! No generic OS title bar: Home icon leads into the main menu, with custom window controls.
 
 use crate::app::PivotApp;
@@ -34,9 +34,12 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
             }
             ui.add_space(6.0);
 
-            // Main menu bar follows Home.
+            // Main menu bar follows Home. Keep inactive menu labels clearly readable (esp. Medium Dark).
+            ui.style_mut().visuals.override_text_color = Some(t.text_strong);
             ui.style_mut().visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
             ui.style_mut().visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+            ui.style_mut().visuals.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, t.text_strong);
+            ui.style_mut().visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0_f32, t.text_strong);
             ui.style_mut().visuals.widgets.hovered.bg_stroke = Stroke::NONE;
             ui.style_mut().spacing.button_padding = egui::vec2(8.0, 3.0);
             app.menu_bar(ui);
