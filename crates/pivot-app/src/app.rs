@@ -101,8 +101,72 @@ impl WorksheetState {
         format!("Sheet {:02}", number)
     }
     pub fn table_title_prefix(&self) -> String {
-        format!("Table {:02}", self.number)
+        extract_table_prefix(&self.name).unwrap_or_else(|| format!("Table {:02}", self.number))
     }
+}
+
+pub fn extract_table_prefix(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let lower = trimmed.to_lowercase();
+    let prefix_len = if lower.starts_with("sheet") {
+        Some(5)
+    } else if lower.starts_with("table") {
+        Some(5)
+    } else if lower.starts_with("tabel") {
+        Some(5)
+    } else if lower.starts_with("lembar") {
+        Some(6)
+    } else {
+        None
+    };
+
+    if let Some(len) = prefix_len {
+        let rest = trimmed[len..].trim_start_matches(|c: char| c.is_whitespace() || c == '_' || c == '-').trim();
+        if !rest.is_empty() {
+            let first_token = rest.split_whitespace().next().unwrap_or(rest);
+            let code = first_token.trim_end_matches(|c: char| c == ':' || c == '-' || c == '_');
+            if code.chars().any(|c| c.is_alphanumeric()) {
+                return Some(format!("Table {code}"));
+            }
+        }
+    }
+
+    let first_token = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let code = first_token.trim_end_matches(|c: char| c == ':' || c == '-' || c == '_');
+    if code.starts_with(|c: char| c.is_ascii_digit()) && (code.contains('.') || code.len() <= 5) {
+        return Some(format!("Table {code}"));
+    }
+
+    None
+}
+
+pub fn strip_any_table_prefix(title: &str) -> &str {
+    let t = title.trim();
+    let lower = t.to_lowercase();
+    let prefix_len = if lower.starts_with("table") {
+        Some(5)
+    } else if lower.starts_with("tabel") {
+        Some(5)
+    } else {
+        None
+    };
+
+    if let Some(len) = prefix_len {
+        let rest = t[len..].trim_start();
+        if let Some(pos) = rest.find(' ') {
+            let code = &rest[..pos];
+            if code.chars().any(|c| c.is_alphanumeric()) {
+                return rest[pos + 1..].trim();
+            }
+        } else if rest.chars().any(|c| c.is_alphanumeric()) {
+            return "";
+        }
+    }
+    t
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -522,11 +586,16 @@ impl PivotApp {
                     let mut applied_name = None;
                     if let Some(ws) = self.worksheets.iter_mut().find(|w| w.id == sheet_id) {
                         let prefix = ws.table_title_prefix();
-                        let base = model.title
-                            .strip_prefix(&format!("{prefix} "))
-                            .or_else(|| model.title.strip_prefix(&prefix))
-                            .unwrap_or(&model.title)
-                            .trim();
+                        let base = strip_any_table_prefix(&model.title);
+                        let base = if base.is_empty() {
+                            model.title
+                                .strip_prefix(&format!("{prefix} "))
+                                .or_else(|| model.title.strip_prefix(&prefix))
+                                .unwrap_or(&model.title)
+                                .trim()
+                        } else {
+                            base
+                        };
                         model.title = if base.is_empty() { prefix } else { format!("{prefix} {base}") };
                         applied_name = Some(ws.name.clone());
                         ws.model = Some(model);
@@ -1095,7 +1164,30 @@ impl PivotApp {
     pub fn rename_worksheet(&mut self, idx: usize, name: String) {
         if let Some(ws) = self.worksheets.get_mut(idx) {
             let name = name.trim();
-            if !name.is_empty() { ws.name = name.to_string(); }
+            if !name.is_empty() && ws.name != name {
+                let old_prefix = ws.table_title_prefix();
+                ws.name = name.to_string();
+                let new_prefix = ws.table_title_prefix();
+
+                // If a model is already computed for this worksheet, immediately update its title prefix
+                if let Some(model) = ws.model.as_mut() {
+                    let base = strip_any_table_prefix(&model.title);
+                    let base = if base.is_empty() {
+                        model.title
+                            .strip_prefix(&format!("{old_prefix} "))
+                            .or_else(|| model.title.strip_prefix(&old_prefix))
+                            .unwrap_or(&model.title)
+                            .trim()
+                    } else {
+                        base
+                    };
+                    model.title = if base.is_empty() {
+                        new_prefix
+                    } else {
+                        format!("{new_prefix} {base}")
+                    };
+                }
+            }
         }
     }
 
@@ -1232,12 +1324,17 @@ impl PivotApp {
                 .or(self.active_spec().title_override.clone())
                 .unwrap_or_default();
             let prefix = self.active_sheet().table_title_prefix();
-            let base = current
-                .strip_prefix(&format!("{prefix} "))
-                .or_else(|| current.strip_prefix(&prefix))
-                .unwrap_or(&current)
-                .trim()
-                .to_string();
+            let base = strip_any_table_prefix(&current);
+            let base = if base.is_empty() {
+                current
+                    .strip_prefix(&format!("{prefix} "))
+                    .or_else(|| current.strip_prefix(&prefix))
+                    .unwrap_or(&current)
+                    .trim()
+            } else {
+                base
+            }
+            .to_string();
             self.active_spec_mut().title_override = if base.is_empty() { None } else { Some(base) };
         } else {
             self.active_spec_mut().title_override = None;
@@ -1651,6 +1748,63 @@ impl eframe::App for PivotApp {
         egui::TopBottomPanel::bottom("status_bar").frame(egui::Frame::new().fill(t.status_bar)).show(ctx, |ui| { chrome::status_bar(self, ui); });
         egui::SidePanel::left("activity_bar").exact_width(44.0).frame(egui::Frame::new().fill(t.app_bar)).show(ctx, |ui| { chrome::activity_bar(self, ui); });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas)).show(ctx, |ui| { dock::show(self, ui); });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_table_prefix() {
+        assert_eq!(extract_table_prefix("Sheet 01"), Some("Table 01".to_string()));
+        assert_eq!(extract_table_prefix("Sheet 01.01"), Some("Table 01.01".to_string()));
+        assert_eq!(extract_table_prefix("Sheet 01.02 - Regional"), Some("Table 01.02".to_string()));
+        assert_eq!(extract_table_prefix("Sheet 2.3"), Some("Table 2.3".to_string()));
+        assert_eq!(extract_table_prefix("sheet 03.1"), Some("Table 03.1".to_string()));
+        assert_eq!(extract_table_prefix("Sheet-04.01"), Some("Table 04.01".to_string()));
+        assert_eq!(extract_table_prefix("Table 01.01"), Some("Table 01.01".to_string()));
+        assert_eq!(extract_table_prefix("Tabel 02.01"), Some("Table 02.01".to_string()));
+        assert_eq!(extract_table_prefix("Lembar 01.01"), Some("Table 01.01".to_string()));
+        assert_eq!(extract_table_prefix("01.01"), Some("Table 01.01".to_string()));
+        assert_eq!(extract_table_prefix("01.01 Branch Summary"), Some("Table 01.01".to_string()));
+        assert_eq!(extract_table_prefix("Summary Analysis"), None);
+    }
+
+    #[test]
+    fn test_strip_any_table_prefix() {
+        assert_eq!(strip_any_table_prefix("Table 01 Sum of Sales"), "Sum of Sales");
+        assert_eq!(strip_any_table_prefix("Table 01.01 Sum of Sales"), "Sum of Sales");
+        assert_eq!(strip_any_table_prefix("Tabel 02.01 Sum of Sales"), "Sum of Sales");
+        assert_eq!(strip_any_table_prefix("Table 01"), "");
+        assert_eq!(strip_any_table_prefix("Sum of Sales"), "Sum of Sales");
+    }
+
+    #[test]
+    fn test_worksheet_table_title_prefix_and_rename() {
+        let mut ws = WorksheetState::new(
+            "s1".to_string(),
+            "Sheet 01".to_string(),
+            1,
+            default_spec(),
+        );
+        assert_eq!(ws.table_title_prefix(), "Table 01");
+
+        // Simulate model attached
+        let mut model = ThemedTableModel::default();
+        model.title = "Table 01 Sum of Sales".to_string();
+        ws.model = Some(model);
+
+        // Rename worksheet
+        ws.name = "Sheet 01.01".to_string();
+        assert_eq!(ws.table_title_prefix(), "Table 01.01");
+
+        // Update model title using the new prefix logic
+        let new_prefix = ws.table_title_prefix();
+        let base = strip_any_table_prefix(&ws.model.as_ref().unwrap().title);
+        ws.model.as_mut().unwrap().title = format!("{new_prefix} {base}");
+
+        assert_eq!(ws.model.as_ref().unwrap().title, "Table 01.01 Sum of Sales");
     }
 }
 

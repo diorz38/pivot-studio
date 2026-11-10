@@ -915,7 +915,12 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(mut over) = app.active_spec().title_override.clone() {
         // normalize legacy/base display: show without duplicated worksheet prefix
         let prefix = app.active_sheet().table_title_prefix();
-        let shown = over.strip_prefix(&format!("{prefix} ")).unwrap_or(&over).to_string();
+        let base = crate::app::strip_any_table_prefix(&over);
+        let shown = if base.is_empty() {
+            over.strip_prefix(&format!("{prefix} ")).unwrap_or(&over).to_string()
+        } else {
+            base.to_string()
+        };
         over = shown;
         if ui
             .add(egui::TextEdit::singleline(&mut over).id(egui::Id::new(("title_override", app.active_worksheet))).hint_text("Table title (without Table NN prefix)"))
