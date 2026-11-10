@@ -297,6 +297,14 @@ impl PivotApp {
         }
     }
 
+    pub fn set_brightness(&mut self, b: Brightness, ctx: &egui::Context) {
+        self.brightness = b;
+        self.status = format!("Brightness set to {}.", b.label());
+        let tokens = Tokens::for_brightness(b);
+        apply(ctx, &tokens);
+        self.brightness_applied = Some(b);
+    }
+
     pub fn active_sheet(&self) -> &WorksheetState {
         &self.worksheets[self.active_worksheet.min(self.worksheets.len().saturating_sub(1))]
     }
@@ -1543,15 +1551,36 @@ impl PivotApp {
             "data.connect" => { self.on_home = false; self.on_source_page = false; self.db_panel_open = true; self.db_tab_mysql = false; self.status = "Database: connect to SQLite (pushdown). CSV, XLSX, DBF, SQLite supported; MySQL temporarily disabled.".to_string(); }
             "data.resolve_model" => { self.on_home = false; self.on_source_page = true; self.request_resolve_model(); }
             "data.add_dataset" => { self.on_home = false; self.on_source_page = true; self.pick_and_add_dataset(); }
-            "file.export" => { let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string(); self.export_pivot(&format); }
+            "file.export" | "file.export.xlsx" | "file.export.pdf" | "file.export.html" => {
+                let format = if id.ends_with(".xlsx") {
+                    "xlsx".to_string()
+                } else if id.ends_with(".pdf") {
+                    "pdf".to_string()
+                } else if id.ends_with(".html") {
+                    "html".to_string()
+                } else {
+                    params.get("format").and_then(|v| v.as_str()).unwrap_or("html").to_string()
+                };
+                self.export_pivot(&format);
+            }
             "data.cancel_load" => { self.cancel_load(); self.cancel_export(); self.cancel_pivot(); }
             "pivot.recompute" => self.request_pivot_recompute(),
             "pivot.clear" => self.clear_layout(),
             "pivot.add_sheet" => self.add_worksheet(),
             "view.brightness" => {
-                if let Some(mode) = params.get("mode").and_then(|v| v.as_str()) {
-                    if let Some(b) = Brightness::parse(mode) { self.brightness = b; self.status = format!("Brightness set to {}.", b.label()); let tokens = Tokens::for_brightness(b); apply(ctx, &tokens); self.brightness_applied = Some(b); }
-                    else { self.status = format!("Unknown brightness mode: {mode}."); }
+                let mode_str = params.get("mode")
+                    .or_else(|| params.get("id"))
+                    .and_then(|v| v.as_str());
+                if let Some(mode) = mode_str {
+                    if let Some(b) = Brightness::parse(mode) {
+                        self.brightness = b;
+                        self.status = format!("Brightness set to {}.", b.label());
+                        let tokens = Tokens::for_brightness(b);
+                        apply(ctx, &tokens);
+                        self.brightness_applied = Some(b);
+                    } else {
+                        self.status = format!("Unknown brightness mode: {mode}.");
+                    }
                 }
             }
             "format.theme" => {

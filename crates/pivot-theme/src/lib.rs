@@ -14,6 +14,8 @@
 pub mod color;
 pub mod table;
 
+pub use table::{BorderThemeId, TableColorThemeId};
+
 use egui::{Color32, Context, CornerRadius, FontId, Margin, Stroke, Style, TextStyle, Visuals};
 use serde::{Deserialize, Serialize};
 

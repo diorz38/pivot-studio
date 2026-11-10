@@ -1,11 +1,11 @@
 //! Docked, resizable panel layout (DesignCraft docking feel).
 //! Home, Data Model / Source Data, and multi-worksheet pivot editor.
 
-use crate::app::PivotApp;
+use crate::app::{ActivityTab, PivotApp};
 use crate::icons::*;
 use egui::{Color32, RichText, Sense, Stroke, Vec2};
 use pivot_core::{Aggregate, DataType, FilterOp, FooterBandSpec, ThemedTableModel, Value as CoreValue};
-use pivot_theme::Tokens;
+use pivot_theme::{BorderThemeId, Brightness, TableColorThemeId, Tokens};
 use serde_json::Value;
 
 pub fn show(app: &mut PivotApp, ui: &mut egui::Ui) {
@@ -591,30 +591,15 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
                             }
                         }
                     }
-                    crate::app::ActivityTab::Themes => {
-                        panel_header(ui, "Table Themes & Styles", Some("THEMES"), &t);
+                    ActivityTab::Themes => {
+                        panel_header(ui, "Themes & Styling", Some("THEMES"), &t);
                         ui.add_space(6.0);
-                        options_and_footer_ui(app, ui, &t);
+                        themes_panel(app, ui, &t);
                     }
-                    crate::app::ActivityTab::Export => {
+                    ActivityTab::Export => {
                         panel_header(ui, "Export Workspace", Some("EXPORT"), &t);
                         ui.add_space(6.0);
-                        ui.label(RichText::new("Export active worksheet or workbook to XLSX, PDF, or HTML with identical styling:").color(t.text_muted).size(11.5));
-                        ui.add_space(10.0);
-                        if ui.button("Export to Excel (.xlsx)").clicked() {
-                            let ctx = ui.ctx().clone();
-                            app.dispatch("file.export.xlsx", &Value::Null, &ctx);
-                        }
-                        ui.add_space(4.0);
-                        if ui.button("Export to HTML (.html)").clicked() {
-                            let ctx = ui.ctx().clone();
-                            app.dispatch("file.export.html", &Value::Null, &ctx);
-                        }
-                        ui.add_space(4.0);
-                        if ui.button("Export to PDF (.pdf)").clicked() {
-                            let ctx = ui.ctx().clone();
-                            app.dispatch("file.export.pdf", &Value::Null, &ctx);
-                        }
+                        export_panel(app, ui, &t);
                     }
                     _ => {
                         panel_header(ui, &format!("Pivot Layout - {}", app.active_sheet().name), Some("Stage PIVOT"), &t);
@@ -653,6 +638,223 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::same(12))).show_inside(ui, |ui| {
         pivot_grid(app, ui, &t);
     });
+}
+
+fn themes_panel(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
+    egui::ScrollArea::vertical().id_salt("themes_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        // 1. Application UI Theme (Brightness)
+        ui.label(RichText::new("Application Theme (UI Mode)").strong().color(t.text_strong));
+        ui.label(RichText::new("Select the overall studio interface color scheme:").color(t.text_muted).size(11.0));
+        ui.add_space(4.0);
+
+        let mut current_brightness = app.brightness;
+        egui::ComboBox::from_id_salt("themes_panel_app_theme")
+            .selected_text(RichText::new(current_brightness.label()).strong().color(t.text_strong))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for b in Brightness::ALL {
+                    let resp = ui.selectable_value(&mut current_brightness, b, b.label());
+                    if resp.clicked() || resp.changed() {
+                        app.set_brightness(b, ui.ctx());
+                    }
+                }
+            });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // 2. Table Color Theme (Palette)
+        ui.label(RichText::new("Table Color Palette").strong().color(t.text_strong));
+        ui.label(RichText::new("Palette applied to worksheet tables, exports, and previews:").color(t.text_muted).size(11.0));
+        ui.add_space(4.0);
+
+        let mut current_color = app.table_color_theme;
+        egui::ComboBox::from_id_salt("themes_panel_color_theme")
+            .selected_text(RichText::new(current_color.label()).strong().color(t.text_strong))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for c in TableColorThemeId::ALL {
+                    let resp = ui.selectable_value(&mut current_color, c, c.label());
+                    if resp.clicked() || resp.changed() {
+                        app.table_color_theme = c;
+                        app.status = format!("Table color theme set to {}.", c.label());
+                    }
+                }
+            });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // 3. Table Border Theme
+        ui.label(RichText::new("Table Border Style").strong().color(t.text_strong));
+        ui.label(RichText::new("Cell borders and horizontal rules style:").color(t.text_muted).size(11.0));
+        ui.add_space(4.0);
+
+        let mut current_border = app.table_border_theme;
+        egui::ComboBox::from_id_salt("themes_panel_border_theme")
+            .selected_text(RichText::new(current_border.label()).strong().color(t.text_strong))
+            .width(220.0)
+            .show_ui(ui, |ui| {
+                for b in BorderThemeId::ALL {
+                    let resp = ui.selectable_value(&mut current_border, b, b.label());
+                    if resp.clicked() || resp.changed() {
+                        app.table_border_theme = b;
+                        app.status = format!("Table border theme set to {}.", b.label());
+                    }
+                }
+            });
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // 4. Output language, subtotals, title, footer bands
+        options_and_footer_ui(app, ui, t);
+    });
+}
+
+fn export_panel(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
+    egui::ScrollArea::vertical().id_salt("export_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        ui.label(RichText::new("Export active worksheet or entire workbook to XLSX, PDF, or HTML with identical styling:").color(t.text_muted).size(11.5));
+        ui.add_space(10.0);
+
+        if let Some(progress) = app.exporting.as_ref().map(|e| e.progress.clone()) {
+            egui::Frame::NONE
+                .fill(t.panel_alt)
+                .stroke(Stroke::new(1.0_f32, t.accent))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::same(10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new(&progress).color(t.text_strong).size(12.0));
+                        if ui.button("Cancel").clicked() {
+                            app.cancel_export();
+                        }
+                    });
+                });
+            ui.add_space(10.0);
+        }
+
+        let has_model = app.active_model().is_some();
+        let has_data = app.table.is_some();
+        let has_values = !app.active_spec().values.is_empty();
+
+        if !has_model {
+            egui::Frame::NONE
+                .fill(t.warning_bg)
+                .stroke(Stroke::new(1.0_f32, t.warning_border))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("⚠️ Pivot Table Not Ready for Export").strong().color(t.warning_text).size(12.0));
+                        ui.add_space(2.0);
+                        if !has_data {
+                            ui.label(RichText::new("No data is loaded in this workspace yet. Load data from Files or Data Sources to begin.").size(11.0).color(t.text));
+                            ui.add_space(6.0);
+                            if ui.button("📂 Open Data Import").clicked() {
+                                app.on_source_page = true;
+                                app.activity_tab = ActivityTab::Files;
+                            }
+                        } else if !has_values {
+                            ui.label(RichText::new("At least one column must be assigned to Values before a pivot can be computed and exported.").size(11.0).color(t.text));
+                            ui.add_space(6.0);
+                            if ui.button("📊 Go to Pivot Layout").clicked() {
+                                app.activity_tab = ActivityTab::Layout;
+                            }
+                        } else {
+                            ui.label(RichText::new("Specification changed or pending compute. Click Recompute to build the table.").size(11.0).color(t.text));
+                            ui.add_space(6.0);
+                            if ui.button("▶ Recompute Pivot Now").clicked() {
+                                app.request_pivot_recompute();
+                            }
+                        }
+                    });
+                });
+            ui.add_space(10.0);
+        }
+
+        // Action cards for Export formats
+        export_action_card(
+            ui,
+            t,
+            "Excel Workbook (.xlsx)",
+            "Exports all worksheets into a multi-sheet Microsoft Excel workbook with matching typography and colors.",
+            "📗",
+            has_model,
+            || app.export_pivot("xlsx"),
+        );
+        ui.add_space(8.0);
+
+        export_action_card(
+            ui,
+            t,
+            "Standalone HTML (.html)",
+            "Exports responsive, self-contained HTML tables for viewing in any web browser or embedding into reports.",
+            "🌐",
+            has_model,
+            || app.export_pivot("html"),
+        );
+        ui.add_space(8.0);
+
+        export_action_card(
+            ui,
+            t,
+            "PDF Document (.pdf)",
+            "Exports the active worksheet as a high-resolution, paginated PDF document with table borders and headers.",
+            "📄",
+            has_model,
+            || app.export_pivot("pdf"),
+        );
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.add_space(6.0);
+
+        // Styling summary badge
+        ui.label(RichText::new("Export Styling Configuration").strong().color(t.text_strong));
+        ui.label(RichText::new(format!("• Color Palette: {}\n• Border Style: {}\n• Language: {}",
+            app.table_color_theme.label(),
+            app.table_border_theme.label(),
+            app.active_spec().output_language.label()
+        )).size(11.0).color(t.text_muted));
+    });
+}
+
+fn export_action_card<F: FnOnce()>(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    title: &str,
+    description: &str,
+    icon: &str,
+    enabled: bool,
+    on_click: F,
+) {
+    let stroke = if enabled { Stroke::new(1.0_f32, t.border) } else { Stroke::new(1.0_f32, t.input_border) };
+    let bg = if enabled { t.panel } else { t.panel_alt };
+
+    egui::Frame::NONE
+        .fill(bg)
+        .stroke(stroke)
+        .corner_radius(6.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icon).size(18.0));
+                ui.add_space(4.0);
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(title).strong().size(12.5).color(if enabled { t.text_strong } else { t.text_disabled }));
+                    ui.label(RichText::new(description).size(11.0).color(t.text_muted));
+                    ui.add_space(4.0);
+                    if ui.add_enabled(enabled, egui::Button::new(RichText::new(format!("Export to {}", title)).size(11.5))).clicked() {
+                        on_click();
+                    }
+                });
+            });
+        });
 }
 
 fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {

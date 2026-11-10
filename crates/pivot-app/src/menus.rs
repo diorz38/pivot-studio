@@ -66,6 +66,7 @@ pub fn menu_tree() -> Vec<(&'static str, Vec<Item>)> {
             cmd("Worksheet", "nav.worksheet"),
             Item::Sep,
             Item::Sub("Brightness".to_string(), vec![
+                cmd_p("Deriva Dark (Default)", "view.brightness", json!({"mode": "derivaDark"})),
                 cmd_p("Dark", "view.brightness", json!({"mode": "dark"})),
                 cmd_p("Medium Dark", "view.brightness", json!({"mode": "mediumDark"})),
                 cmd_p("Medium Light", "view.brightness", json!({"mode": "mediumLight"})),

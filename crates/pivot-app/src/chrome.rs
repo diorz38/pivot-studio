@@ -55,12 +55,12 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
             let mut current_brightness = app.brightness;
             egui::ComboBox::from_id_salt("top_theme")
                 .selected_text(RichText::new(current_brightness.label()).size(11.5).color(t.text_strong))
-                .width(105.0)
+                .width(115.0)
                 .show_ui(ui, |ui| {
                     for b in Brightness::ALL {
-                        if ui.selectable_value(&mut current_brightness, b, b.label()).clicked() {
-                            let ctx = ui.ctx().clone();
-                            app.dispatch("view.brightness", &serde_json::json!({"id": b.id()}), &ctx);
+                        let resp = ui.selectable_value(&mut current_brightness, b, b.label());
+                        if resp.clicked() || resp.changed() {
+                            app.set_brightness(b, ui.ctx());
                         }
                     }
                 });
@@ -145,6 +145,27 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
 
                 if ui.add(run_btn).on_hover_text("Recompute active worksheet pivot table").clicked() {
                     app.request_pivot_recompute();
+                }
+
+                ui.add_space(4.0);
+
+                // Quick Export Button (opens Export workspace tab)
+                let export_btn = egui::Button::new(
+                    RichText::new("⇡ EXPORT")
+                        .size(11.5)
+                        .strong()
+                        .color(t.text_strong)
+                )
+                .fill(t.panel)
+                .stroke(Stroke::new(1.0_f32, t.border))
+                .corner_radius(4.0);
+
+                if ui.add(export_btn).on_hover_text("Open Export Workspace panel (XLSX, HTML, PDF)").clicked() {
+                    app.active_stage = 5;
+                    app.on_home = false;
+                    app.on_source_page = false;
+                    app.activity_tab = ActivityTab::Export;
+                    app.show_left_panel = true;
                 }
             });
         });
