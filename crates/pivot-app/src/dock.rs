@@ -378,9 +378,13 @@ fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                 }
             }
             if !app.data_model_diagnostics.errors.is_empty() || !app.data_model_diagnostics.warnings.is_empty() {
-                ui.add_space(6.0);
-                for e in &app.data_model_diagnostics.errors { ui.label(RichText::new(format!("Error: {e}")).color(egui::Color32::from_rgb(220, 90, 90)).size(11.5)); }
-                for w in &app.data_model_diagnostics.warnings { ui.label(RichText::new(format!("Warning: {w}")).color(egui::Color32::from_rgb(220, 160, 60)).size(11.0)); }
+                ui.add_space(8.0);
+                for (idx, err) in app.data_model_diagnostics.errors.iter().enumerate() {
+                    render_diagnostic_card(ui, &t, "RELATION", &format!("Error #{idx}"), err, Some("Check that foreign keys match and lookup dataset has no duplicate non-null keys."), true);
+                }
+                for (idx, warn) in app.data_model_diagnostics.warnings.iter().enumerate() {
+                    render_diagnostic_card(ui, &t, "SCHEMA", &format!("Warning #{idx}"), warn, Some("Unmatched keys will produce NULL values in the resolved table."), false);
+                }
             }
         });
 
