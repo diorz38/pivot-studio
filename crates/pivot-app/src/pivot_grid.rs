@@ -6,7 +6,18 @@ use pivot_core::model::{CellRole, ThemedTableModel};
 use pivot_theme::table::{BorderThemeId, CellBorderMode, TableColorThemeId, TableStyle};
 use pivot_theme::{Brightness, Tokens};
 
-const PAD_X: f32 = 8.0;
+const PAD_X: f32 = 10.0;
+
+/// Numeric cell text (int/decimal, optional thousands separators or % sign).
+fn is_numeric(s: &str) -> bool {
+    let t = s.trim().trim_end_matches('%');
+    !t.is_empty() && !t.contains(|c: char| !c.is_ascii_digit() && c != ',' && c != '.' && c != '-' && c != '+') && t.parse::<f64>().is_ok()
+}
+
+/// Font for a cell: numerics get tabular monospace (caller right-aligns).
+fn cell_font(text: &str, size: f32) -> (egui::FontId, bool) {
+    if is_numeric(text) { (egui::FontId::monospace(size - 0.5), true) } else { (egui::FontId::proportional(size), false) }
+}
 const MIN_COL_W: f32 = 50.0;
 const RESIZE_HIT: f32 = 5.0;
 
@@ -86,20 +97,23 @@ pub fn show(
     ensure_widths(&mut state, model);
 
     ui.horizontal(|ui| {
-        if ui.small_button("Copy selection (TSV)").clicked() {
-            copy_selection(ui.ctx(), model, &state);
-            state.copy_status = Some("Selection copied as TSV.".to_string());
-        }
-        if ui.small_button("Copy all (TSV)").clicked() {
-            copy_all(ui.ctx(), model);
-            state.copy_status = Some("Table copied as TSV.".to_string());
-        }
-        if ui.small_button("Clear selection").clicked() {
-            state.clear_selection();
-        }
         if let Some(msg) = &state.copy_status {
             ui.label(egui::RichText::new(msg).color(t.text_muted).size(11.0));
         }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("Clear").on_hover_text("Clear cell selection").clicked() {
+                state.clear_selection();
+            }
+            if ui.small_button("Copy all").on_hover_text("Copy whole table as TSV").clicked() {
+                copy_all(ui.ctx(), model);
+                state.copy_status = Some("Table copied as TSV.".to_string());
+            }
+            let has_sel = state.selection().is_some();
+            if ui.add_enabled(has_sel, egui::Button::new("Copy").small()).on_hover_text("Copy selection as TSV").clicked() {
+                copy_selection(ui.ctx(), model, &state);
+                state.copy_status = Some("Selection copied as TSV.".to_string());
+            }
+        });
     });
     ui.add_space(4.0);
 
@@ -137,7 +151,27 @@ pub fn show(
         let (content_rect, response) = ui.allocate_exact_size(Vec2::new(total_w.max(100.0), content_h.max(row_h)), Sense::click_and_drag());
         let painter = ui.painter_at(content_rect.intersect(ui.clip_rect()));
         paint_body_and_footer(&painter, model, &style, &state, content_rect, header_rows_n, row_h);
+        paint_selection_outline(&painter, &state, content_rect, header_rows_n, row_h, &style, model);
         handle_selection(ui.ctx(), &response, model, &mut state, content_rect, header_rows_n, row_h);
+        response
+    });
+    // Right-click menu on the grid body mirrors the toolbar copy actions.
+    body_out.inner.context_menu(|ui| {
+        let has_sel = state.selection().is_some();
+        if ui.add_enabled(has_sel, egui::Button::new("Copy selection (TSV)")).clicked() {
+            copy_selection(ui.ctx(), model, &state);
+            state.copy_status = Some("Selection copied as TSV.".to_string());
+            ui.close_menu();
+        }
+        if ui.button("Copy all (TSV)").clicked() {
+            copy_all(ui.ctx(), model);
+            state.copy_status = Some("Table copied as TSV.".to_string());
+            ui.close_menu();
+        }
+        if ui.add_enabled(has_sel, egui::Button::new("Clear selection")).clicked() {
+            state.clear_selection();
+            ui.close_menu();
+        }
     });
     // capture horizontal offset (egui 0.31: state.offset)
     x_offset = body_out.state.offset.x;
@@ -154,6 +188,22 @@ pub fn show(
 
     state.store(ui.ctx(), grid_id);
     ui.ctx().request_repaint(); // keep resize/offset in sync feeling responsive
+}
+
+/// Accent outline around the selection range: reads as "selection" on top of any fill.
+fn paint_selection_outline(painter: &egui::Painter, state: &GridUiState, rect: Rect, header_rows_n: usize, row_h: f32, style: &TableStyle, model: &ThemedTableModel) {
+    let Some((r0, c0, r1, c1)) = state.selection() else { return };
+    if r1 < header_rows_n { return; }
+    let total = model.body_rows.len() + model.footer_bands.len();
+    let r0b = (r0.max(header_rows_n) - header_rows_n).min(total.saturating_sub(1));
+    let r1b = (r1 - header_rows_n).min(total.saturating_sub(1));
+    if r0b > r1b { return; }
+    let x0 = rect.min.x + col_x(&state.col_widths, c0.min(state.col_widths.len().saturating_sub(1)));
+    let x1 = rect.min.x + col_x(&state.col_widths, (c1 + 1).min(state.col_widths.len()));
+    let y0 = rect.min.y + r0b as f32 * row_h;
+    let y1 = rect.min.y + (r1b + 1) as f32 * row_h;
+    let sel_rect = Rect::from_min_max(Pos2::new(x0, y0), Pos2::new(x1, y1));
+    painter.rect_stroke(sel_rect, 0.0, Stroke::new(1.25_f32, style.tokens.accent_strong), StrokeKind::Inside);
 }
 
 fn paint_cell_border(painter: &egui::Painter, rect: Rect, rs: &pivot_theme::table::RoleStyle) {
@@ -232,6 +282,12 @@ fn handle_resize(ui: &Ui, col_widths: &mut [f32], header_rect: Rect, x_offset: f
 }
 
 fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, style: &TableStyle, state: &GridUiState, rect: Rect, header_rows_n: usize, row_h: f32) {
+    // Selection paints an opaque composite (selection over role fill) and re-derives
+    // the text color from it, so selected cells stay readable in every theme.
+    let sel_colors = |rs: &pivot_theme::table::RoleStyle| -> (egui::Color32, egui::Color32) {
+        let fill = pivot_theme::color::over(style.selection, rs.fill);
+        (fill, pivot_theme::color::text_on(fill, &style.tokens))
+    };
     let sel = state.selection();
     // body
     for (ri, brow) in model.body_rows.iter().enumerate() {
@@ -246,14 +302,19 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
             let vis_row = header_rows_n + ri;
             let selected = sel.map(|(r0, c0, r1, c1)| vis_row >= r0 && vis_row <= r1 && ci >= c0 && ci < c1 + 1).unwrap_or(false);
             let rs = role_style_for(style, cell.role, zebra);
-            let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
+            let (bg, text) = if selected { sel_colors(&rs) } else { (rs.fill, rs.text) };
             painter.rect_filled(cell_rect, 0.0, bg);
             paint_cell_border(painter, cell_rect, &rs);
+            if matches!(cell.role, CellRole::GrandTotal) {
+                // Strong rule above the grand total band separates it from body rows.
+                painter.line_segment([cell_rect.left_top(), cell_rect.right_top()], Stroke::new(1.5_f32, style.border));
+            }
             let indent = if matches!(cell.role, CellRole::RowHeader) { cell.indent as f32 * 12.0 } else { 0.0 };
-            let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
-            let tx = (cell_rect.min.x + PAD_X + indent).min(cell_rect.max.x - 4.0);
+            let (font, right) = cell_font(&cell.text, 13.0);
+            let galley = painter.layout_no_wrap(truncate(&cell.text, 80), font, text);
+            let tx = if right { (cell_rect.max.x - PAD_X) - galley.size().x } else { (cell_rect.min.x + PAD_X + indent).min(cell_rect.max.x - 4.0) };
             let ty = cell_rect.center().y - galley.size().y * 0.5;
-            painter.galley(Pos2::new(tx, ty), galley, rs.text);
+            painter.galley(Pos2::new(tx, ty), galley, text);
             ci += cs;
         }
     }
@@ -268,11 +329,15 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
             let vis_row = header_rows_n + model.body_rows.len() + fi;
             let selected = sel.map(|(r0, _, r1, _)| vis_row >= r0 && vis_row <= r1).unwrap_or(false);
             let rs = if band.kind == pivot_core::model::FooterBandKind::Notes { style.notes } else { role_style_for(style, cell.role, false) };
-            let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
+            let (bg, text) = if selected { sel_colors(&rs) } else { (rs.fill, rs.text) };
             painter.rect_filled(cell_rect, 0.0, bg);
             paint_cell_border(painter, cell_rect, &rs);
-            let galley = painter.layout_no_wrap(truncate(&cell.text, 160), FontId::proportional(12.0), rs.text);
-            painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
+            // Notes band: quiet small text; other footer bands keep cell typography.
+            let size = if band.kind == pivot_core::model::FooterBandKind::Notes { 11.0 } else { 13.0 };
+            let (font, right) = cell_font(&cell.text, size);
+            let galley = painter.layout_no_wrap(truncate(&cell.text, 160), font, text);
+            let tx = if right { (cell_rect.max.x - PAD_X) - galley.size().x } else { cell_rect.min.x + PAD_X };
+            painter.galley(Pos2::new(tx, cell_rect.center().y - galley.size().y * 0.5), galley, text);
         } else {
             for cell in &band.cells {
                 let cs = cell.colspan.max(1);
@@ -282,11 +347,16 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
                 let vis_row = header_rows_n + model.body_rows.len() + fi;
                 let selected = sel.map(|(r0, c0, r1, c1)| vis_row >= r0 && vis_row <= r1 && ci >= c0 && ci < c1 + 1).unwrap_or(false);
                 let rs = role_style_for(style, cell.role, false);
-                let bg = if selected { style.selection.gamma_multiply(0.35) } else { rs.fill };
+                let (bg, text) = if selected { sel_colors(&rs) } else { (rs.fill, rs.text) };
                 painter.rect_filled(cell_rect, 0.0, bg);
                 paint_cell_border(painter, cell_rect, &rs);
-                let galley = painter.layout_no_wrap(truncate(&cell.text, 80), FontId::proportional(13.0), rs.text);
-                painter.galley(Pos2::new(cell_rect.min.x + PAD_X, cell_rect.center().y - galley.size().y * 0.5), galley, rs.text);
+                if matches!(cell.role, CellRole::GrandTotal) {
+                    painter.line_segment([cell_rect.left_top(), cell_rect.right_top()], Stroke::new(1.5_f32, style.border));
+                }
+                let (font, right) = cell_font(&cell.text, 13.0);
+                let galley = painter.layout_no_wrap(truncate(&cell.text, 80), font, text);
+                let tx = if right { (cell_rect.max.x - PAD_X) - galley.size().x } else { cell_rect.min.x + PAD_X };
+                painter.galley(Pos2::new(tx, cell_rect.center().y - galley.size().y * 0.5), galley, text);
                 ci += cs;
             }
         }

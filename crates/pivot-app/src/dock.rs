@@ -26,7 +26,7 @@ fn home_page(app: &mut PivotApp, ui: &mut egui::Ui) {
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
                 ui.label(RichText::new("Pivot Studio").strong().size(30.0).color(t.text_strong));
                 ui.add_space(4.0);
-                ui.label(RichText::new("Open a saved project, import a file, or connect to a database. After loading data, review/select source columns, then build pivots across multiple worksheets.").size(14.0).color(t.text_muted));
+                ui.label(RichText::new("Import data or open a project to start building pivot tables.").size(14.0).color(t.text_muted));
                 ui.add_space(26.0);
                 if app.loading.is_some() {
                     egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.accent)).inner_margin(egui::Margin::same(10)).corner_radius(6.0).show(ui, |ui| {
@@ -55,11 +55,38 @@ fn home_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                 egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(12)).corner_radius(6.0).show(ui, |ui| {
                     ui.label(RichText::new("Recent projects").strong().color(t.text_strong));
                     ui.add_space(6.0);
-                    ui.label(RichText::new("No recent projects yet. Project history arrives in a later phase.").color(t.text_disabled));
+                    ui.label(RichText::new("No recent projects yet.").color(t.text_disabled));
                 });
             });
         });
     });
+}
+
+/// Checkbox whose label always uses the theme base text color (egui grays out
+/// disabled-widget labels and some idle states otherwise).
+fn themed_checkbox(ui: &mut egui::Ui, t: &Tokens, checked: &mut bool, label: impl Into<egui::WidgetText>) -> egui::Response {
+    ui.style_mut().visuals.widgets.inactive.fg_stroke.color = t.text;
+    ui.style_mut().visuals.widgets.noninteractive.fg_stroke.color = t.text;
+    ui.style_mut().visuals.widgets.hovered.fg_stroke.color = t.text_strong;
+    ui.style_mut().visuals.widgets.active.fg_stroke.color = t.text_strong;
+    ui.checkbox(checked, label)
+}
+
+/// Painted "x" close glyph (no icon font in default egui fonts).
+fn paint_close_x(painter: &egui::Painter, c: egui::Pos2, s: f32, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.3_f32, color);
+    painter.line_segment([egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)], stroke);
+    painter.line_segment([egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)], stroke);
+}
+
+/// Truncate to at most `max` chars with an ellipsis.
+fn truncate_chars(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i >= max { out.push('…'); break; }
+        out.push(ch);
+    }
+    out
 }
 
 fn action_card(ui: &mut egui::Ui, app: &mut PivotApp, t: &Tokens, title: &str, detail: &str, command: &str) {
@@ -327,7 +354,7 @@ fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
                                     egui::ScrollArea::vertical().id_salt("rs_label_scroll").max_height(150.0).show(ui, |ui| {
                                         for c in &label_cols {
                                             let mut checked = app.rel_label_columns.contains(c);
-                                            if ui.checkbox(&mut checked, c.as_str()).changed() {
+                                            if themed_checkbox(ui, &t, &mut checked, c.as_str()).changed() {
                                                 if checked { app.rel_label_columns.insert(c.clone()); } else { app.rel_label_columns.remove(c); }
                                             }
                                         }
@@ -411,40 +438,72 @@ fn source_page(app: &mut PivotApp, ui: &mut egui::Ui) {
 fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
     let t = Tokens::get(ui.ctx());
 
-    // Worksheet tabs
+    // Worksheet tabs: painted tabs (active = fill + accent underline, editable name).
     egui::TopBottomPanel::top("worksheet_tabs").frame(egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::symmetric(8, 4))).show_inside(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
+        ui.horizontal(|ui| {
             let mut select: Option<usize> = None;
             let mut close: Option<usize> = None;
             let active = app.active_worksheet;
+            let tab_w = 150.0;
+            let tab_h = 26.0;
             for i in 0..app.worksheets.len() {
                 let selected = i == active;
                 let id = app.worksheets[i].id.clone();
+                let name = app.worksheets[i].name.clone();
+                let show_close = app.worksheets.len() > 1;
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(tab_w, tab_h), Sense::click());
+                let close_rect = egui::Rect::from_min_size(egui::pos2(rect.max.x - 22.0, rect.min.y), egui::vec2(22.0, tab_h));
+                let close_resp = if show_close {
+                    Some(ui.interact(close_rect, egui::Id::new(("tab_close", id.as_str())), Sense::click()).on_hover_text("Close worksheet"))
+                } else { None };
+                let body_rect = if show_close { egui::Rect::from_min_max(rect.min, egui::pos2(close_rect.min.x, rect.max.y)) } else { rect };
+                let hover_close = close_resp.as_ref().map(|r| r.hovered()).unwrap_or(false);
+                // Tab chrome
+                let bg = if selected { t.panel_alt } else if resp.hovered() && !hover_close { t.hover } else { egui::Color32::TRANSPARENT };
+                ui.painter().rect_filled(rect, 4.0, bg);
                 if selected {
-                    let mut edit_name = app.worksheets[i].name.clone();
-                    let edit = ui.add(egui::TextEdit::singleline(&mut edit_name)
-                        .hint_text("Sheet name")
-                        .desired_width(130.0)
-                        .id(egui::Id::new(("sheet_name_edit", id.as_str()))));
+                    let bar = egui::Rect::from_min_size(egui::pos2(rect.min.x, rect.max.y - 2.0), egui::vec2(rect.width(), 2.0));
+                    ui.painter().rect_filled(bar, 1.0, t.accent);
+                }
+                if let Some(r) = &close_resp {
+                    if r.hovered() { ui.painter().rect_filled(close_rect, 3.0, t.hover); }
+                    paint_close_x(ui.painter(), close_rect.center(), 4.0, t.text_muted);
+                    if r.clicked() { close = Some(i); }
+                }
+                if selected {
+                    // Active tab doubles as the rename field (frameless, sits on the tab).
+                    let mut edit_name = name;
+                    let edit = ui.put(
+                        body_rect.shrink2(egui::vec2(6.0, 3.0)),
+                        egui::TextEdit::singleline(&mut edit_name)
+                            .hint_text("Sheet name")
+                            .frame(false)
+                            .desired_width(f32::INFINITY)
+                            .id(egui::Id::new(("sheet_name_edit", id.as_str()))),
+                    );
                     if edit.changed() { app.rename_worksheet(i, edit_name); }
                 } else {
-                    let name = app.worksheets[i].name.clone();
-                    ui.push_id(("sheet_tab", id.as_str()), |ui| {
-                        if ui.selectable_label(false, &name).clicked() { select = Some(i); }
-                        if app.worksheets.len() > 1
-                            && ui.small_button("x").on_hover_text("Close worksheet").clicked() { close = Some(i); }
-                    });
-                    ui.add_space(4.0);
-                    continue;
+                    let galley = ui.painter().layout_no_wrap(truncate_chars(&name, 16), egui::FontId::proportional(13.0), t.text);
+                    let tx = (body_rect.min.x + 8.0).min(body_rect.max.x - galley.size().x - 2.0);
+                    ui.painter().galley(egui::pos2(tx, body_rect.center().y - galley.size().y * 0.5), galley, t.text);
+                    if resp.clicked() && !hover_close { select = Some(i); }
                 }
-                if app.worksheets.len() > 1 {
-                    ui.push_id(("sheet_tab_close", id.as_str()), |ui| {
-                        if ui.small_button("x").on_hover_text("Close worksheet").clicked() { close = Some(i); }
-                    });
-                }
-                ui.add_space(4.0);
+                ui.add_space(8.0);
             }
-            if ui.button("+ Add Worksheet").clicked() { app.add_worksheet(); }
+            // "+" add-worksheet icon button (extra gap so it reads as separate
+            // from the tab row, not glued to the active sheet)
+            ui.add_space(8.0);
+            {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), Sense::click());
+                let resp = resp.on_hover_text("Add worksheet");
+                if resp.hovered() { ui.painter().rect_filled(rect, 4.0, t.hover); }
+                let c = rect.center();
+                let s = 4.5;
+                let stroke = egui::Stroke::new(1.4_f32, t.text);
+                ui.painter().line_segment([egui::pos2(c.x - s, c.y), egui::pos2(c.x + s, c.y)], stroke);
+                ui.painter().line_segment([egui::pos2(c.x, c.y - s), egui::pos2(c.x, c.y + s)], stroke);
+                if resp.clicked() { app.add_worksheet(); }
+            }
             if let Some(i) = select { app.select_worksheet(i); }
             if let Some(i) = close { app.close_worksheet(i); }
         });
@@ -541,11 +600,13 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     ui.label(RichText::new("Options").strong().color(t.text_strong));
     ui.horizontal(|ui| {
         ui.label(RichText::new("Output language").color(t.text_muted));
-        let mut lang = app.active_spec().output_language;
-        egui::ComboBox::from_id_salt(("output_language", app.active_worksheet)).selected_text(lang.label()).width(160.0).show_ui(ui, |ui| {
-            for l in pivot_core::OutputLanguage::ALL { ui.selectable_value(&mut lang, l, l.label()); }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut lang = app.active_spec().output_language;
+            egui::ComboBox::from_id_salt(("output_language", app.active_worksheet)).selected_text(lang.label()).width(160.0).show_ui(ui, |ui| {
+                for l in pivot_core::OutputLanguage::ALL { ui.selectable_value(&mut lang, l, l.label()); }
+            });
+            if lang != app.active_spec().output_language { app.active_spec_mut().output_language = lang; app.request_pivot_recompute(); }
         });
-        if lang != app.active_spec().output_language { app.active_spec_mut().output_language = lang; app.request_pivot_recompute(); }
     });
     let mut row_sub = app.active_spec().subtotals.row_subtotals;
     let row_sub_label = if app.active_spec().rows.len() > 1 {
@@ -553,8 +614,7 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     } else {
         "Row subtotals".to_string()
     };
-    if ui
-        .checkbox(&mut row_sub, format!("{row_sub_label}##subtotals_{}", app.active_worksheet))
+    if themed_checkbox(ui, t, &mut row_sub, format!("{row_sub_label}##subtotals_{}", app.active_worksheet))
         .on_hover_text("Show/hide subtotal rows for grouped row fields (requires 2 or more row fields).")
         .changed()
     {
@@ -564,8 +624,7 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     let mut col_tot = app.active_spec().subtotals.column_totals;
     let col_tot_enabled = !app.active_spec().columns.is_empty();
     ui.add_enabled_ui(col_tot_enabled, |ui| {
-        if ui
-            .checkbox(&mut col_tot, format!("Column totals##col_totals_{}", app.active_worksheet))
+        if themed_checkbox(ui, t, &mut col_tot, format!("Column totals##col_totals_{}", app.active_worksheet))
             .on_hover_text("Add a Total column across pivot columns (when column fields are configured).")
             .changed()
         {
@@ -587,8 +646,7 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         })
         .unwrap_or_else(|| "(recompute to preview)".to_string());
     let mut pinned = app.active_spec().title_override.is_some();
-    if ui
-        .checkbox(&mut pinned, format!("Pin title##pin_title_{}", app.active_worksheet))
+    if themed_checkbox(ui, t, &mut pinned, format!("Pin title##pin_title_{}", app.active_worksheet))
         .changed()
     {
         app.set_title_pinned(pinned);
@@ -674,81 +732,93 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     let mut add_val: Option<(String, Aggregate)> = None;
     let sid = app.active_worksheet;
 
-    ui.group(|ui| {
-        ui.label(RichText::new("Rows (group by)").strong().color(t.text_strong));
-        ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_id_salt(("pick_row_field", sid)).selected_text(&app.pick_row_field).width(140.0).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_row_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_row_field) { app.pick_row_as_type = dt; } } } });
-            egui::ComboBox::from_id_salt(("pick_row_type", sid)).selected_text(data_type_label(app.pick_row_as_type)).width(120.0).show_ui(ui, |ui| { for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] { ui.selectable_value(&mut app.pick_row_as_type, dt, data_type_label(dt)); } });
+    // Section layout: no group boxes; picker row stretches full width with the
+    // Add button right-justified so all three sections align symmetrically.
+    ui.label(RichText::new("Rows (group by)").strong().size(12.5).color(t.text_strong));
+    ui.horizontal(|ui| {
+        // Field combo fills the row minus the fixed type combo + Add button reserve.
+        let field_w = (ui.available_width() - 108.0 - 104.0 - 16.0).max(80.0);
+        egui::ComboBox::from_id_salt(("pick_row_field", sid)).selected_text(&app.pick_row_field).width(field_w).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_row_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_row_field) { app.pick_row_as_type = dt; } } } });
+        egui::ComboBox::from_id_salt(("pick_row_type", sid)).selected_text(data_type_label(app.pick_row_as_type)).width(108.0).show_ui(ui, |ui| { for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] { ui.selectable_value(&mut app.pick_row_as_type, dt, data_type_label(dt)); } });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Add Row").clicked() { add_row = Some((app.pick_row_field.clone(), app.pick_row_as_type)); }
         });
-        let mut remove_row: Option<usize> = None;
-        let mut move_row: Option<(usize, usize)> = None;
-        let row_len = app.active_spec().rows.len();
-        for (i, f) in app.active_spec().rows.clone().iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&f.name).color(t.text));
-                if ui.small_button("x").clicked() { remove_row = Some(i); }
-                if i > 0 && ui.small_button("^").clicked() { move_row = Some((i, i - 1)); }
-                if i + 1 < row_len && ui.small_button("v").clicked() { move_row = Some((i, i + 1)); }
-            });
-        }
-        if row_len == 0 { ui.label(RichText::new("(no row grouping)").color(t.text_disabled)); }
-        if let Some(i) = remove_row { app.remove_row_field(i); } else if let Some((a, b)) = move_row { app.move_row_field(a, b); }
     });
+    let mut remove_row: Option<usize> = None;
+    let mut move_row: Option<(usize, usize)> = None;
+    let row_len = app.active_spec().rows.len();
+    for (i, f) in app.active_spec().rows.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&f.name).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").on_hover_text("Remove").clicked() { remove_row = Some(i); }
+                if i > 0 && ui.small_button("^").on_hover_text("Move up").clicked() { move_row = Some((i, i - 1)); }
+                if i + 1 < row_len && ui.small_button("v").on_hover_text("Move down").clicked() { move_row = Some((i, i + 1)); }
+            });
+        });
+    }
+    if row_len == 0 { ui.label(RichText::new("(no row grouping)").color(t.text_disabled)); }
+    if let Some(i) = remove_row { app.remove_row_field(i); } else if let Some((a, b)) = move_row { app.move_row_field(a, b); }
 
-    ui.add_space(6.0);
-    ui.group(|ui| {
-        ui.label(RichText::new("Columns (split, optional)").strong().color(t.text_strong));
-        ui.label(RichText::new("Enable 'Subtotal' on a column level to add subtotal columns for that grouping (useful with 2+ column levels).").color(t.text_muted).size(11.0));
-        ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_id_salt(("pick_col_field", sid)).selected_text(&app.pick_col_field).width(140.0).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_col_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_col_field) { app.pick_col_as_type = dt; } } } });
-            egui::ComboBox::from_id_salt(("pick_col_type", sid)).selected_text(data_type_label(app.pick_col_as_type)).width(120.0).show_ui(ui, |ui| { for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] { ui.selectable_value(&mut app.pick_col_as_type, dt, data_type_label(dt)); } });
+    ui.add_space(12.0);
+    ui.label(RichText::new("Columns (split, optional)").strong().size(12.5).color(t.text_strong));
+    ui.label(RichText::new("Enable 'Subtotal' on a column level to add subtotal columns for that grouping (useful with 2+ column levels).").color(t.text_muted).size(11.0));
+    ui.horizontal(|ui| {
+        let field_w = (ui.available_width() - 108.0 - 104.0 - 16.0).max(80.0);
+        egui::ComboBox::from_id_salt(("pick_col_field", sid)).selected_text(&app.pick_col_field).width(field_w).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_col_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_col_field) { app.pick_col_as_type = dt; } } } });
+        egui::ComboBox::from_id_salt(("pick_col_type", sid)).selected_text(data_type_label(app.pick_col_as_type)).width(108.0).show_ui(ui, |ui| { for dt in [DataType::String, DataType::Integer, DataType::Decimal, DataType::Boolean, DataType::Date, DataType::DateTime] { ui.selectable_value(&mut app.pick_col_as_type, dt, data_type_label(dt)); } });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Add Column").clicked() { add_col = Some((app.pick_col_field.clone(), app.pick_col_as_type)); }
         });
-        let mut remove_col: Option<usize> = None;
-        let mut move_col: Option<(usize, usize)> = None;
-        let mut toggle_col_sub: Option<(usize, bool)> = None;
-        let col_len = app.active_spec().columns.len();
-        let col_subs = app.active_spec().effective_column_subtotals();
-        for (i, f) in app.active_spec().columns.clone().iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&f.name).color(t.text));
-                let mut sub = *col_subs.get(i).unwrap_or(&false);
-                if ui.checkbox(&mut sub, format!("Subtotal##colsub_{sid}_{i}")).on_hover_text("Add subtotal columns for this column grouping level.").changed() {
-                    toggle_col_sub = Some((i, sub));
-                }
-                if ui.small_button("x").clicked() { remove_col = Some(i); }
-                if i > 0 && ui.small_button("^").clicked() { move_col = Some((i, i - 1)); }
-                if i + 1 < col_len && ui.small_button("v").clicked() { move_col = Some((i, i + 1)); }
-            });
-        }
-        if col_len == 0 { ui.label(RichText::new("(no column split)").color(t.text_disabled)); }
-        if let Some((i, v)) = toggle_col_sub {
-            let spec = app.active_spec_mut();
-            let mut subs = spec.effective_column_subtotals();
-            if i < subs.len() { subs[i] = v; spec.column_subtotals = subs; }
-            app.request_pivot_recompute();
-        } else if let Some(i) = remove_col { app.remove_col_field(i); } else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
     });
+    let mut remove_col: Option<usize> = None;
+    let mut move_col: Option<(usize, usize)> = None;
+    let mut toggle_col_sub: Option<(usize, bool)> = None;
+    let col_len = app.active_spec().columns.len();
+    let col_subs = app.active_spec().effective_column_subtotals();
+    for (i, f) in app.active_spec().columns.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(&f.name).color(t.text));
+            let mut sub = *col_subs.get(i).unwrap_or(&false);
+            if themed_checkbox(ui, t, &mut sub, format!("Subtotal##colsub_{sid}_{i}")).on_hover_text("Add subtotal columns for this column grouping level.").changed() {
+                toggle_col_sub = Some((i, sub));
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").on_hover_text("Remove").clicked() { remove_col = Some(i); }
+                if i > 0 && ui.small_button("^").on_hover_text("Move up").clicked() { move_col = Some((i, i - 1)); }
+                if i + 1 < col_len && ui.small_button("v").on_hover_text("Move down").clicked() { move_col = Some((i, i + 1)); }
+            });
+        });
+    }
+    if col_len == 0 { ui.label(RichText::new("(no column split)").color(t.text_disabled)); }
+    if let Some((i, v)) = toggle_col_sub {
+        let spec = app.active_spec_mut();
+        let mut subs = spec.effective_column_subtotals();
+        if i < subs.len() { subs[i] = v; spec.column_subtotals = subs; }
+        app.request_pivot_recompute();
+    } else if let Some(i) = remove_col { app.remove_col_field(i); } else if let Some((a, b)) = move_col { app.move_col_field(a, b); }
 
-    ui.add_space(6.0);
-    ui.group(|ui| {
-        ui.label(RichText::new("Values (required)").strong().color(t.text_strong));
-        ui.horizontal_wrapped(|ui| {
-            egui::ComboBox::from_id_salt(("pick_val_field", sid)).selected_text(&app.pick_val_field).width(140.0).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_val_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_val_field) { app.pick_val_agg = if matches!(dt, DataType::Integer | DataType::Decimal) { Aggregate::Sum } else { Aggregate::Count }; } } } });
-            egui::ComboBox::from_id_salt(("pick_val_agg", sid)).selected_text(agg_label(app.pick_val_agg)).width(120.0).show_ui(ui, |ui| { for agg in [Aggregate::Sum, Aggregate::Count, Aggregate::CountDistinct, Aggregate::Average, Aggregate::Min, Aggregate::Max] { ui.selectable_value(&mut app.pick_val_agg, agg, agg_label(agg)); } });
+    ui.add_space(12.0);
+    ui.label(RichText::new("Values (required)").strong().size(12.5).color(t.text_strong));
+    ui.horizontal(|ui| {
+        let field_w = (ui.available_width() - 108.0 - 104.0 - 16.0).max(80.0);
+        egui::ComboBox::from_id_salt(("pick_val_field", sid)).selected_text(&app.pick_val_field).width(field_w).show_ui(ui, |ui| { for f in field_names { if ui.selectable_value(&mut app.pick_val_field, f.clone(), f).changed() { if let Some(dt) = app.field_type(&app.pick_val_field) { app.pick_val_agg = if matches!(dt, DataType::Integer | DataType::Decimal) { Aggregate::Sum } else { Aggregate::Count }; } } } });
+        egui::ComboBox::from_id_salt(("pick_val_agg", sid)).selected_text(agg_label(app.pick_val_agg)).width(108.0).show_ui(ui, |ui| { for agg in [Aggregate::Sum, Aggregate::Count, Aggregate::CountDistinct, Aggregate::Average, Aggregate::Min, Aggregate::Max] { ui.selectable_value(&mut app.pick_val_agg, agg, agg_label(agg)); } });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.button("Add Value").clicked() { add_val = Some((app.pick_val_field.clone(), app.pick_val_agg)); }
         });
-        let mut remove_val: Option<usize> = None;
-        for (i, v) in app.active_spec().values.clone().iter().enumerate() {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{}({})", v.aggregate.label(), v.field.name)).color(t.text));
-                if ui.small_button("x").clicked() { remove_val = Some(i); }
-            });
-        }
-        if app.active_spec().values.is_empty() { ui.label(RichText::new("(add a Value to compute the pivot)").color(t.accent)); }
-        if let Some(i) = remove_val { app.remove_value_field(i); }
     });
+    let mut remove_val: Option<usize> = None;
+    for (i, v) in app.active_spec().values.clone().iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(format!("{}({})", v.aggregate.label(), v.field.name)).color(t.text));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("x").on_hover_text("Remove").clicked() { remove_val = Some(i); }
+            });
+        });
+    }
+    if app.active_spec().values.is_empty() { ui.label(RichText::new("(add a Value to compute the pivot)").color(t.accent)); }
+    if let Some(i) = remove_val { app.remove_value_field(i); }
 
     if let Some((n, dt)) = add_row { app.reinterpret_named_column(&n, dt); app.add_row_field(n); }
     if let Some((n, dt)) = add_col { app.reinterpret_named_column(&n, dt); app.add_col_field(n); }
@@ -759,7 +829,7 @@ fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
     ui.label(RichText::new(title).strong().color(t.text_strong).size(13.0));
 }
 
-fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
+fn pivot_grid(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     if let Some(model) = app.active_model() {
         ui.label(RichText::new(&model.title).strong().color(t.text_strong).size(16.0));
         ui.label(RichText::new(format!("Worksheet: {}  |  Theme: {} / {}", app.active_sheet().name, app.table_color_theme.label(), app.table_border_theme.label())).color(t.text_muted).size(11.0));
@@ -785,8 +855,24 @@ fn pivot_grid(app: &PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         ui.add_space(8.0);
         ui.label(RichText::new(format!("Data loaded: {} rows x {} cols total. Raw data preview hidden; use source column selection and pivot layout.", app.row_count(), app.col_count())).color(t.text_muted).size(11.0));
     } else {
-        ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
-        ui.label(RichText::new("Import data from Home to begin.").color(t.text_muted));
+        // Empty worksheet: centered call-to-action instead of stray labels.
+        let avail = ui.available_size();
+        ui.allocate_space(egui::vec2(0.0, (avail.y * 0.3).max(20.0)));
+        ui.vertical_centered(|ui| {
+            ui.label(RichText::new("No data yet").strong().size(20.0).color(t.text_strong));
+            ui.add_space(4.0);
+            ui.label(RichText::new("Import a file or connect a database to start building pivots.").color(t.text_muted));
+            ui.add_space(10.0);
+            let mut import = false;
+            let mut home = false;
+            ui.horizontal(|ui| {
+                import = ui.button("Import data...").clicked();
+                home = ui.button("Go to Home").clicked();
+            });
+            let ctx = ui.ctx().clone();
+            if import { app.dispatch("file.import", &Value::Null, &ctx); }
+            if home { app.dispatch("nav.home", &Value::Null, &ctx); }
+        });
     }
 }
 

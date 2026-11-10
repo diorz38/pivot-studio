@@ -11,6 +11,7 @@
 //! Phase 4 adds role-based table themes/presets (`table` module) rendered from
 //! resolved roles for screen/export parity.
 
+pub mod color;
 pub mod table;
 
 use egui::{Color32, Context, CornerRadius, FontId, Margin, Stroke, Style, TextStyle, Visuals};
@@ -93,6 +94,11 @@ pub struct Tokens {
     pub divider: Color32,
     pub status_bar: Color32,
     pub focus: Color32,
+    /// Constant inks for [`crate::color::text_on`]: readable on light/dark fills
+    /// regardless of brightness mode. Fills may be literal per table color theme;
+    /// text never is.
+    pub ink_on_light: Color32,
+    pub ink_on_dark: Color32,
 }
 
 impl Tokens {
@@ -113,7 +119,9 @@ impl Tokens {
                 text_disabled: hex(0x667084),
                 accent: hex(0x3b82f6),
                 accent_strong: hex(0x2563eb),
-                selection: Color32::from_rgba_unmultiplied(59, 130, 246, 90),
+                // Darker blue + alpha 150: the composite over every dark-mode role fill
+                // (incl. Executive blue totals) stays readable for both token inks (WCAG AA).
+                selection: Color32::from_rgba_unmultiplied(30, 80, 200, 150),
                 hover: hex(0x343c4b),
                 input_bg: hex(0x1c212b),
                 input_border: hex(0x465166),
@@ -121,6 +129,8 @@ impl Tokens {
                 divider: hex(0x323a48),
                 status_bar: hex(0x1b2028),
                 focus: hex(0x60a5fa),
+                ink_on_light: hex(0x111827),
+                ink_on_dark: hex(0xf5f7fb),
             },
             Brightness::MediumDark => Self {
                 dark: true,
@@ -138,7 +148,7 @@ impl Tokens {
                 text_disabled: hex(0x9dabc0),
                 accent: hex(0x4a90e2),
                 accent_strong: hex(0x2f7dd6),
-                selection: Color32::from_rgba_unmultiplied(74, 144, 226, 95),
+                selection: Color32::from_rgba_unmultiplied(30, 80, 200, 150),
                 hover: hex(0x424c5c),
                 input_bg: hex(0x28303b),
                 input_border: hex(0x5a677c),
@@ -146,6 +156,8 @@ impl Tokens {
                 divider: hex(0x404a59),
                 status_bar: hex(0x262c36),
                 focus: hex(0x7ab0f5),
+                ink_on_light: hex(0x111827),
+                ink_on_dark: hex(0xf5f7fb),
             },
             Brightness::MediumLight => Self {
                 dark: false,
@@ -170,6 +182,8 @@ impl Tokens {
                 divider: hex(0xc7ced9),
                 status_bar: hex(0xd4d9e1),
                 focus: hex(0x2563eb),
+                ink_on_light: hex(0x111827),
+                ink_on_dark: hex(0xf5f7fb),
             },
             Brightness::Light => Self {
                 dark: false,
@@ -194,6 +208,8 @@ impl Tokens {
                 divider: hex(0xe2e6ec),
                 status_bar: hex(0xeef0f3),
                 focus: hex(0x2563eb),
+                ink_on_light: hex(0x111827),
+                ink_on_dark: hex(0xf5f7fb),
             },
             Brightness::HighContrast => Self {
                 dark: true,
@@ -218,6 +234,8 @@ impl Tokens {
                 divider: hex(0xffffff),
                 status_bar: hex(0x000000),
                 focus: hex(0x00ffff),
+                ink_on_light: Color32::BLACK,
+                ink_on_dark: Color32::WHITE,
             },
         }
     }
@@ -311,6 +329,8 @@ mod tests {
                 assert_eq!(t.panel, Color32::BLACK);
                 assert_ne!(t.focus, t.panel);
             }
+            // Derived-text inks must span both polarities in every mode.
+            assert!(color::luminance(t.ink_on_dark) > color::luminance(t.ink_on_light));
         }
     }
 }

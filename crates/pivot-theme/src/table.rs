@@ -62,9 +62,9 @@ impl TableColorThemeId {
 #[serde(rename_all = "snake_case")]
 pub enum BorderThemeId {
     /// Full cell grid borders.
-    #[default]
     Full,
     /// Horizontal rules for header/footer bands; body values without grid borders.
+    #[default]
     HorizontalRules,
     /// No cell borders.
     None,
@@ -131,6 +131,8 @@ pub struct RoleStyle {
 /// Fully resolved table style roles for the current app brightness + table theme.
 #[derive(Debug, Clone, Copy)]
 pub struct TableStyle {
+    /// Tokens of the brightness this style was resolved for (ink pair for derived text).
+    pub tokens: Tokens,
     pub color: TableColorThemeId,
     pub border_theme: BorderThemeId,
     pub title: Color32,
@@ -166,17 +168,19 @@ impl TableStyle {
         if b == Brightness::HighContrast || color == TableColorThemeId::HighContrast {
             return Self::high_contrast(border_theme, t);
         }
-        let (header_fill, header_text, zebra_fill, total_fill, notes_text, zebra) = match (color, t.dark) {
-            (TableColorThemeId::ClassicGrid, true) => (hex(0x2f3745), t.text_strong, t.grid_body, hex(0x3a4558), t.text_muted, false),
-            (TableColorThemeId::ClassicGrid, false) => (hex(0xd8e3f3), hex(0x102a56), t.grid_body, hex(0xc7d7f0), t.text_muted, false),
-            (TableColorThemeId::Ledger, true) => (hex(0x334155), t.text_strong, blend(t.grid_body, t.panel_alt, 0.55), hex(0x1f3b2d), t.text_muted, true),
-            (TableColorThemeId::Ledger, false) => (hex(0xd9eadc), hex(0x14361f), blend(t.grid_body, hex(0xeaf4ed), 0.7), hex(0xcfe8d6), t.text_muted, true),
-            (TableColorThemeId::Minimal, true) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
-            (TableColorThemeId::Minimal, false) => (t.panel, t.text_strong, t.grid_body, t.panel_alt, t.text_muted, false),
-            (TableColorThemeId::Executive, true) => (hex(0x1e3a5f), hex(0xf8fbff), blend(t.grid_body, hex(0x16253d), 0.35), hex(0x2a4d7a), t.text_muted, false),
-            (TableColorThemeId::Executive, false) => (hex(0x1f4e79), Color32::WHITE, blend(t.grid_body, hex(0xe8f0fa), 0.45), hex(0xd4e4f7), t.text_muted, false),
-            (TableColorThemeId::CompactDense, true) => (hex(0x3b4454), t.text_strong, blend(t.grid_body, t.panel, 0.4), hex(0x454f61), t.text_muted, true),
-            (TableColorThemeId::CompactDense, false) => (hex(0xd5dde8), hex(0x0f172a), blend(t.grid_body, hex(0xe7edf5), 0.55), hex(0xc8d3e2), t.text_muted, true),
+        // Fills only — text colors are always derived via [`crate::color::text_on`]
+        // so every role stays readable on every brightness × color-theme blend.
+        let (header_fill, zebra_fill, total_fill, zebra) = match (color, t.dark) {
+            (TableColorThemeId::ClassicGrid, true) => (hex(0x2f3745), blend(t.grid_body, t.panel_alt, 0.35), hex(0x3a4558), true),
+            (TableColorThemeId::ClassicGrid, false) => (hex(0xd8e3f3), blend(t.grid_body, t.panel_alt, 0.3), hex(0xc7d7f0), true),
+            (TableColorThemeId::Ledger, true) => (hex(0x334155), blend(t.grid_body, t.panel_alt, 0.55), hex(0x1f3b2d), true),
+            (TableColorThemeId::Ledger, false) => (hex(0xd9eadc), blend(t.grid_body, hex(0xeaf4ed), 0.7), hex(0xcfe8d6), true),
+            (TableColorThemeId::Minimal, true) => (t.panel, t.grid_body, t.panel_alt, false),
+            (TableColorThemeId::Minimal, false) => (t.panel, t.grid_body, t.panel_alt, false),
+            (TableColorThemeId::Executive, true) => (hex(0x1e3a5f), blend(t.grid_body, hex(0x16253d), 0.35), hex(0x2a4d7a), false),
+            (TableColorThemeId::Executive, false) => (hex(0x1f4e79), blend(t.grid_body, hex(0xe8f0fa), 0.45), hex(0xd4e4f7), false),
+            (TableColorThemeId::CompactDense, true) => (hex(0x3b4454), blend(t.grid_body, t.panel, 0.4), hex(0x454f61), true),
+            (TableColorThemeId::CompactDense, false) => (hex(0xd5dde8), blend(t.grid_body, hex(0xe7edf5), 0.55), hex(0xc8d3e2), true),
             (TableColorThemeId::HighContrast, _) => unreachable!(),
         };
         let grid_line = if color == TableColorThemeId::Minimal { blend(t.grid_line, t.panel, 0.35) } else { t.grid_line };
@@ -187,20 +191,23 @@ impl TableStyle {
             BorderThemeId::HorizontalRules => (CellBorderMode::HorizontalOnly, CellBorderMode::None, false),
             BorderThemeId::None => (CellBorderMode::None, CellBorderMode::None, false),
         };
-        let role = |fill, text, strong, bm| RoleStyle { fill, text, strong, grid_line, border_mode: bm };
+        let role = |fill, strong, bm| RoleStyle { text: crate::color::text_on(fill, t), fill, strong, grid_line, border_mode: bm };
         Self {
+            tokens: *t,
             color,
             border_theme,
-            title: t.text_strong,
-            stub_head: role(header_fill, header_text, true, border_mode),
-            col_header: role(header_fill, header_text, true, border_mode),
-            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.35 }), if color == TableColorThemeId::Executive && !t.dark { header_text } else { t.text_strong }, true, border_mode),
-            body: role(t.grid_body, t.text, false, body_border),
-            body_zebra: role(zebra_fill, t.text, false, body_border),
-            subtotal: role(blend(total_fill, header_fill, 0.45), t.text_strong, true, border_mode),
-            grand_total: role(total_fill, if color == TableColorThemeId::Executive && t.dark { Color32::WHITE } else { t.text_strong }, true, border_mode),
-            footer: role(blend(total_fill, t.panel_alt, 0.6), t.text_strong, true, border_mode),
-            notes: role(t.panel_alt, notes_text, false, border_mode),
+            title: crate::color::text_on(t.grid_body, t),
+            stub_head: role(header_fill, true, border_mode),
+            col_header: role(header_fill, true, border_mode),
+            // Light themes blend row headers further toward the light panel so the
+            // derived dark ink clears WCAG AA (mid-tone fills fail both inks).
+            row_header: role(blend(header_fill, t.panel_alt, if t.dark { 0.2 } else { 0.5 }), true, border_mode),
+            body: role(t.grid_body, false, body_border),
+            body_zebra: role(zebra_fill, false, body_border),
+            subtotal: role(blend(total_fill, header_fill, 0.45), true, border_mode),
+            grand_total: role(total_fill, true, border_mode),
+            footer: role(blend(total_fill, t.panel_alt, 0.6), true, border_mode),
+            notes: role(t.panel_alt, false, border_mode),
             selection: t.selection,
             border: t.border,
             outer_border,
@@ -224,6 +231,7 @@ impl TableStyle {
             border_mode: bm,
         };
         Self {
+            tokens: *t,
             color: TableColorThemeId::HighContrast,
             border_theme,
             title: Color32::WHITE,
@@ -310,16 +318,43 @@ mod tests {
 
     #[test]
     fn resolve_all_themes_and_brightnesses() {
+        use crate::color::{contrast_ratio, over, text_on};
         for b in Brightness::ALL {
             let tokens = Tokens::for_brightness(b);
             for color in TableColorThemeId::ALL {
                 for border in BorderThemeId::ALL {
                     let s = TableStyle::resolve(color, border, b, &tokens);
-                    assert_ne!(s.col_header.text, s.col_header.fill);
-                    assert_ne!(s.grand_total.text, s.grand_total.fill);
                     assert!(s.row_height > 0.0);
                     assert_eq!(s.color, if b == Brightness::HighContrast { TableColorThemeId::HighContrast } else { color });
                     assert_eq!(s.border_theme, border);
+                    // Every role's text must be readable on its fill (WCAG AA),
+                    // and on the selection overlay painted over the fill.
+                    let roles = [
+                        (s.stub_head, "stub_head"),
+                        (s.col_header, "col_header"),
+                        (s.row_header, "row_header"),
+                        (s.body, "body"),
+                        (s.body_zebra, "body_zebra"),
+                        (s.subtotal, "subtotal"),
+                        (s.grand_total, "grand_total"),
+                        (s.footer, "footer"),
+                        (s.notes, "notes"),
+                    ];
+                    for (r, name) in roles {
+                        assert!(
+                            contrast_ratio(r.text, r.fill) >= 4.5,
+                            "{name} unreadable: {} in {color:?}/{b:?}",
+                            contrast_ratio(r.text, r.fill)
+                        );
+                        let sel_fill = over(s.selection, r.fill);
+                        let sel_text = text_on(sel_fill, &tokens);
+                        assert!(
+                            contrast_ratio(sel_text, sel_fill) >= 4.5,
+                            "{name} selection text unreadable in {color:?}/{b:?}"
+                        );
+                    }
+                    // Title is painted on the body fill.
+                    assert!(contrast_ratio(s.title, s.body.fill) >= 4.5, "title unreadable in {color:?}/{b:?}");
                 }
             }
         }

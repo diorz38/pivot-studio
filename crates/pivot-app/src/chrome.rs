@@ -34,8 +34,6 @@ pub fn app_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 caption_buttons(app, ui);
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new(format!("v0.2.1 • {}", app.brightness.label())).color(t.text_muted).size(11.5));
                 let drag_w = ui.available_width().max(40.0);
                 let (drag_rect, drag_resp) = ui.allocate_exact_size(egui::vec2(drag_w, height), Sense::click_and_drag());
                 let _ = drag_rect;
@@ -69,18 +67,18 @@ fn caption_buttons(app: &mut PivotApp, ui: &mut egui::Ui) {
     let spacing = ui.spacing().item_spacing.x;
     ui.spacing_mut().item_spacing.x = 0.0;
     let buttons = [
-        ("window.close", "x", "Close"),
-        ("window.maximize", if maximized { "R" } else { "M" }, if maximized { "Restore" } else { "Maximize" }),
-        ("window.minimize", "-", "Minimize"),
+        ("window.close", "Close"),
+        ("window.maximize", if maximized { "Restore" } else { "Maximize" }),
+        ("window.minimize", "Minimize"),
     ];
-    for (cmd, glyph, label) in buttons {
+    for (cmd, label) in buttons {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(button_w, button_h), Sense::hover());
         let response = ui.interact(rect, egui::Id::new(("caption", cmd)), Sense::click()).on_hover_cursor(CursorIcon::Default).on_hover_text(label);
         let hovered = response.hovered();
         let bg = if hovered { if cmd == "window.close" { egui::Color32::from_rgb(196, 43, 28) } else { t.hover } } else { Color32::TRANSPARENT };
-        ui.painter().rect_filled(rect, 0.0, bg);
+        ui.painter().rect_filled(rect, 3.0, bg);
         let color = if hovered && cmd == "window.close" { Color32::WHITE } else { t.text };
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(13.0), color);
+        paint_caption_glyph(ui.painter(), rect.center(), cmd, maximized, color);
         if response.clicked() {
             let params = if cmd == "window.maximize" { serde_json::json!({"on": !maximized}) } else { serde_json::Value::Null };
             let ctx = ui.ctx().clone();
@@ -88,6 +86,37 @@ fn caption_buttons(app: &mut PivotApp, ui: &mut egui::Ui) {
         }
     }
     ui.spacing_mut().item_spacing.x = spacing;
+}
+
+/// Caption glyphs drawn with shapes (deterministic across font sets): X, square/restore, line.
+fn paint_caption_glyph(painter: &egui::Painter, c: egui::Pos2, cmd: &str, maximized: bool, color: Color32) {
+    let stroke = Stroke::new(1.2_f32, color);
+    match cmd {
+        "window.close" => {
+            let s = 4.0;
+            painter.line_segment([egui::pos2(c.x - s, c.y - s), egui::pos2(c.x + s, c.y + s)], stroke);
+            painter.line_segment([egui::pos2(c.x - s, c.y + s), egui::pos2(c.x + s, c.y - s)], stroke);
+        }
+        "window.maximize" => {
+            let s = 4.0;
+            if maximized {
+                // restore: back square + front square
+                let back = egui::Rect::from_min_size(egui::pos2(c.x - s, c.y - s - 1.0), egui::vec2(s * 2.0, s * 2.0));
+                let front = egui::Rect::from_min_size(egui::pos2(c.x - s + 2.5, c.y - s + 2.0), egui::vec2(s * 2.0, s * 2.0));
+                painter.rect_stroke(front, 1.0, stroke, egui::StrokeKind::Middle);
+                painter.line_segment([back.left_bottom(), back.left_top()], stroke);
+                painter.line_segment([back.left_top(), back.right_top()], stroke);
+                painter.line_segment([back.right_top(), front.right_top()], stroke);
+            } else {
+                let square = egui::Rect::from_center_size(c, egui::vec2(s * 2.2, s * 2.2));
+                painter.rect_stroke(square, 1.0, stroke, egui::StrokeKind::Middle);
+            }
+        }
+        _ => {
+            // minimize: bottom-aligned line
+            painter.line_segment([egui::pos2(c.x - 4.5, c.y + 3.0), egui::pos2(c.x + 4.5, c.y + 3.0)], stroke);
+        }
+    }
 }
 
 pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
@@ -98,7 +127,7 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                 else if app.pivot_computing.is_some() { "Computing pivot...".to_string() }
                 else if app.exporting.is_some() { app.exporting.as_ref().map(|e| e.progress.clone()).unwrap_or_else(|| "Exporting...".to_string()) }
                 else { app.status.clone() };
-            ui.label(egui::RichText::new(status).color(t.text).size(12.0));
+            ui.add(egui::Label::new(egui::RichText::new(status).color(t.text).size(12.0)).truncate());
             if app.loading.is_some() { ui.add_space(8.0); ui.spinner(); if ui.small_button("Cancel").clicked() { app.cancel_load(); } }
             if app.pivot_computing.is_some() { ui.add_space(8.0); ui.spinner(); if ui.small_button("Cancel pivot").clicked() { app.cancel_pivot(); } }
             if app.exporting.is_some() { ui.add_space(8.0); ui.spinner(); if ui.small_button("Cancel export").clicked() { app.cancel_export(); } }
@@ -109,8 +138,8 @@ pub fn status_bar(app: &mut PivotApp, ui: &mut egui::Ui) {
                         crate::app::DbSource::MySql(p) => format!("DB:mysql(disabled)/{}/{}", p.database, p.table),
                     }
                 } else { "File".to_string() };
-                let sel = match &app.selected_columns { None => "all".to_string(), Some(s) => format!("{}/{}", s.len(), app.col_count()) };
-                ui.label(egui::RichText::new(format!("{} | {} sheets | cols {} | {} | rows {}", src, app.worksheets.len(), sel, app.brightness.label(), app.row_count())).color(t.text_muted).size(12.0));
+                let meta = format!("{src} · {} sheets · {} rows · {}", app.worksheets.len(), app.row_count(), app.brightness.label());
+                ui.label(egui::RichText::new(meta).color(t.text_muted).size(11.5));
             });
         });
     });
