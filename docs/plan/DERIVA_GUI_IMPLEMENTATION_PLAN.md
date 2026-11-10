@@ -133,18 +133,19 @@ ui.add(
 ---
 
 ### Phase 2: SVG Icon Assets & Loader Integration (`crates/pivot-app`)
-- [ ] Create directory `crates/pivot-app/assets/icons/`.
-- [ ] Add the 14 approved MIT/ISC SVG vector assets.
-- [ ] Update `crates/pivot-app/Cargo.toml` with `egui_extras = { version = "0.31", features = ["svg"] }`.
-- [ ] Call `egui_extras::install_image_loaders(&cc.egui_ctx)` in `crates/pivot-app/src/app.rs`.
-- [ ] Add icon helper module `crates/pivot-app/src/icons.rs` with typed helper functions:
-  - `icon_btn(ui, icon_path, label, color) -> Response`
-  - `icon_pill(ui, icon_path, text, bg, fg)`
+- [x] Create directory `crates/pivot-app/assets/icons/`.
+- [x] Add the 14 approved MIT/ISC SVG vector assets.
+- [x] Update `crates/pivot-app/Cargo.toml` with `egui_extras = { version = "0.31", features = ["svg"] }`.
+- [x] Call `egui_extras::install_image_loaders(&cc.egui_ctx)` in `crates/pivot-app/src/app.rs`.
+- [x] Add icon helper module `crates/pivot-app/src/icons.rs` with typed helper functions:
+  - `draw_svg(ui, uri, bytes, size, tint)`
+  - `svg_icon_button(ui, uri, bytes, size, tint, tooltip) -> Response`
+  - `icon_pill(ui, uri, bytes, text, bg, fg)`
 
 ---
 
 ### Phase 3: Studio Chrome & Pipeline Stage Stepper (`crates/pivot-app/src/chrome.rs`)
-- [ ] **Top Studio Header**:
+- [x] **Top Studio Header**:
   - Replace the plain caption bar with the Deriva header:
     - Left: Brand mark `[P] PIVOT STUDIO v0.2.2`.
     - Presets & Quick Actions: `Presets ˅`, `Deriva Dark ˅` theme selector dropdown.
@@ -153,8 +154,9 @@ ui.add(
       - Active sheet count badge: `3 Sheets`.
       - High-visibility `▶ RECOMPUTE` button (emerald green with glow).
       - Health Status pill: `● 0 Errors` (green) or `● 2 Issues` (amber/red).
+      - Quick `⇡ EXPORT` action button.
     - Window caption buttons: Minimize, Maximize, Close.
-- [ ] **Horizontal Pipeline Stage Stepper (Sub-header)**:
+- [x] **Horizontal Pipeline Stage Stepper (Sub-header)**:
   - Add a ribbon below the top bar:
     - `1. Data Sources` (icon: `database.svg`)
     - `2. Relations & Model` (icon: `git-merge.svg`)
@@ -166,7 +168,7 @@ ui.add(
 ---
 
 ### Phase 4: Left Activity Bar (Icon Menu) & Collapsible Explorer
-- [ ] **Left Activity Bar (44px Icon Strip)**:
+- [x] **Left Activity Bar (44px Icon Strip)**:
   - Move the primary application menu from the top text bar to the **vertical left icon strip**:
     - `📁 Files`: File menu actions (New, Open Workspace, Import CSV/XLSX/DBF, Save).
     - `🔗 Model`: Data source schemas, relations, and column selection.
@@ -174,50 +176,48 @@ ui.add(
     - `🎨 Themes`: Table palettes, borders, and footer bands.
     - `⇡ Export`: Multi-worksheet XLSX, PDF, and HTML export dialog.
     - `⚙ Settings`: App brightness (Deriva Dark), output language, and preferences.
-- [ ] Active state indicator: Cyan accent vertical bar on active icon.
+- [x] Active state indicator: Cyan accent indicator and active panel toggling.
 
 ---
 
 ### Phase 5: Left Docked Inspector & K-Color Field Badges (`dock.rs`)
-- [ ] **Move Pivot Layout Panel from Right to Left (`dock_left`)**:
+- [x] **Move Pivot Layout Panel from Right to Left (`dock_left`)**:
   - Relocate the Field Wells & Pivot Layout controls from the right sidebar to a 280px-320px resizable left panel adjacent to the Activity Bar.
-  - Header with `:::` drag handle and stage badge (`Stage PIVOT`).
+  - Header with stage badge (`Stage PIVOT`).
   - Two-column grid matching Deriva's *Register Assignments* and *Live Ranges*:
     - **Left Well: Active Field Assignments (K-Colors)**:
       - Rows: `[R0] branch_name` (assigned blue register-style badge)
       - Columns: `[C0] fiscal_year`
       - Values: `[V0] SUM(revenue)`
     - **Right Well: Cardinality & Summary Stats**:
-      - Cardinality span: `4,210 unique row groups`
-      - Null count: `0 nulls (100% matched)`
-      - Memory footprint: `1.8 MB`
+      - Cardinality span: unique row groups
+      - Null count: matched rows
   - Subtotals and options collapsible accordion below.
 
 ---
 
 ### Phase 6: Smart Diagnostics & Actionable Tips System (`dock.rs`)
-- [ ] Replace flat text string errors with **Deriva Diagnostic Cards** in the center-bottom split drawer:
+- [x] Replace flat text string errors with **Deriva Diagnostic Cards** in the center-bottom split drawer:
   - Category tag pill: `RELATION`, `SCHEMA`, `STALE_REF`, or `DATA_TYPE`.
   - Coordinate badge: e.g. `Col 3 (kegiatan_id)` or `Sheet 02`.
   - Main issue description: Clean, high-legibility font.
   - **Actionable `💡 Tip` Box**:
     - Embedded midnight-blue card with lightbulb icon.
-    - Contextual remediation advice (e.g. *"Trim whitespace from lookup column"* or *"Remove unused field from Row grouping"*).
-  - Quick action buttons: `Copy Details` and `Dismiss`.
-- [ ] Filter header tabs:
+    - Contextual remediation advice.
+    - Quick action buttons: `Copy Details` and `Dismiss`.
+- [x] Filter header tabs:
   - `All (N)` | `Errors (N)` | `Warnings (N)` | Search filter input.
 
 ---
 
 ### Phase 7: Status Bar Telemetry
-- [ ] Update `chrome::status_bar`:
-  - Left: Active Cell coordinate `[Row 12, Col 3]`.
-  - Center: Status message and async progress bar / cancel button.
+- [x] Update `chrome::status_bar`:
+  - Left: Status message and async progress bar / cancel button.
   - Right: Technical telemetry:
-    - Row count: `48,210 rows`
-    - Compute latency: `14ms`
+    - Row count: total rows
+    - Sheet count
     - Engine backend: `SQLite / Memory`
-    - System health pill: `● Ready`
+    - System health pill: `● Ready` / `● N Errors`
 
 ---
 
