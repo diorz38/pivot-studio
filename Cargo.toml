@@ -18,6 +18,7 @@ authors = ["Pivot Studio contributors"]
 # UI (decision #1) - egui/eframe; confirm/adjust exact versions in Phase 0 as needed.
 eframe = { version = "0.31", default-features = true }
 egui = "0.31"
+egui_extras = { version = "0.31", default-features = false, features = ["svg"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

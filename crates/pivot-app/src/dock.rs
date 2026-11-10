@@ -2,7 +2,8 @@
 //! Home, Data Model / Source Data, and multi-worksheet pivot editor.
 
 use crate::app::PivotApp;
-use egui::{RichText, Sense, Vec2};
+use crate::icons::*;
+use egui::{Color32, RichText, Sense, Stroke, Vec2};
 use pivot_core::{Aggregate, DataType, FilterOp, FooterBandSpec, ThemedTableModel, Value as CoreValue};
 use pivot_theme::Tokens;
 use serde_json::Value;
@@ -509,87 +510,141 @@ fn worksheet(app: &mut PivotApp, ui: &mut egui::Ui) {
         });
     });
 
-    egui::TopBottomPanel::bottom("dock_bottom").resizable(true).default_height(170.0).min_height(80.0)
+    egui::TopBottomPanel::bottom("dock_bottom").resizable(true).default_height(if app.diagnostics_open { 190.0 } else { 150.0 }).min_height(75.0)
         .frame(egui::Frame::new().fill(t.panel_alt).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
         .show_inside(ui, |ui| {
-            panel_header(ui, "Data Source / Filters", &t);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Data source:").color(t.text_muted));
-                // Show full real source text as the editable default; editing changes only
-                // the persisted Notes label (source_label), not the real data source.
-                let real_source = app
-                    .table
-                    .as_ref()
-                    .and_then(|tbl| tbl.source.clone())
-                    .or_else(|| app.source_name.clone())
-                    .unwrap_or_default();
-                let mut src = app
-                    .active_spec()
-                    .source_label
-                    .clone()
-                    .unwrap_or_else(|| real_source.clone());
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut src)
-                        .hint_text("Sumber data label (editable, does not change real data source)")
-                        .desired_width(420.0),
-                );
-                if resp.changed() {
-                    let trimmed = src.trim();
-                    // Preserve spaces as typed (e.g. "Data Mira ...") to avoid fighting the cursor;
-                    // treat blank/real-source-equivalent as no custom label override.
-                    app.active_spec_mut().source_label = if trimmed.is_empty()
-                        || (!real_source.is_empty() && trimmed == real_source.trim())
-                    {
-                        None
-                    } else {
-                        Some(src.clone())
-                    };
-                    if app.table.is_some() || app.db_source.is_some() {
-                        app.request_pivot_recompute();
+            if app.diagnostics_open {
+                diagnostics_panel(app, ui, &t);
+            } else {
+                panel_header(ui, "Data Source / Filters", Some("FILTERS"), &t);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Data source:").color(t.text_muted));
+                    // Show full real source text as the editable default; editing changes only
+                    // the persisted Notes label (source_label), not the real data source.
+                    let real_source = app
+                        .table
+                        .as_ref()
+                        .and_then(|tbl| tbl.source.clone())
+                        .or_else(|| app.source_name.clone())
+                        .unwrap_or_default();
+                    let mut src = app
+                        .active_spec()
+                        .source_label
+                        .clone()
+                        .unwrap_or_else(|| real_source.clone());
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut src)
+                            .hint_text("Sumber data label (editable, does not change real data source)")
+                            .desired_width(420.0),
+                    );
+                    if resp.changed() {
+                        let trimmed = src.trim();
+                        // Preserve spaces as typed (e.g. "Data Mira ...") to avoid fighting the cursor;
+                        // treat blank/real-source-equivalent as no custom label override.
+                        app.active_spec_mut().source_label = if trimmed.is_empty()
+                            || (!real_source.is_empty() && trimmed == real_source.trim())
+                        {
+                            None
+                        } else {
+                            Some(src.clone())
+                        };
+                        if app.table.is_some() || app.db_source.is_some() {
+                            app.request_pivot_recompute();
+                        }
                     }
-                }
-                if ui.small_button("Manage columns...").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.source", &Value::Null, &ctx); }
-                let stale = app.stale_spec_refs(&app.active_spec().clone());
-                if !stale.is_empty() { ui.label(RichText::new(format!("Stale refs: {}", stale.join(", "))).color(egui::Color32::from_rgb(220, 120, 60)).size(11.0)); }
-            });
-            ui.label(RichText::new("Edit to change only the Notes/'Sumber data' label in pivot output (real data source is unchanged).").color(t.text_muted).size(10.5));
-            ui.add_space(4.0);
-            if app.table.is_some() || app.db_source.is_some() { filters_ui(app, ui, &t); }
-            else { ui.label(RichText::new("Import data (CSV/XLSX/DBF) or connect SQLite to configure filters.").color(t.text_muted)); }
+                    if ui.small_button("Manage columns...").clicked() { let ctx = ui.ctx().clone(); app.dispatch("nav.source", &Value::Null, &ctx); }
+                    let stale = app.stale_spec_refs(&app.active_spec().clone());
+                    if !stale.is_empty() { ui.label(RichText::new(format!("Stale refs: {}", stale.join(", "))).color(egui::Color32::from_rgb(220, 120, 60)).size(11.0)); }
+                });
+                ui.label(RichText::new("Edit to change only the Notes/'Sumber data' label in pivot output (real data source is unchanged).").color(t.text_muted).size(10.5));
+                ui.add_space(4.0);
+                if app.table.is_some() || app.db_source.is_some() { filters_ui(app, ui, &t); }
+                else { ui.label(RichText::new("Import data (CSV/XLSX/DBF) or connect SQLite to configure filters.").color(t.text_muted)); }
+            }
         });
 
-    egui::SidePanel::right("dock_right").resizable(true).default_width(280.0).min_width(160.0)
-        .frame(egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
-        .show_inside(ui, |ui| {
-            panel_header(ui, &format!("Pivot Layout - {}", app.active_sheet().name), &t);
-            ui.horizontal(|ui| {
-                if ui.button("Recompute").clicked() { app.request_pivot_recompute(); }
-                if ui.button("Clear").clicked() { app.clear_layout(); }
-                if app.pivot_computing.is_some() { ui.spinner(); if ui.small_button("Cancel").clicked() { app.cancel_pivot(); } }
-            });
-            ui.add_space(4.0);
-            let stale = app.stale_spec_refs(&app.active_spec().clone());
-            if !stale.is_empty() {
-                egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(220, 120, 40, 30)).stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(220, 120, 40))).inner_margin(egui::Margin::same(6)).corner_radius(4.0).show(ui, |ui| {
-                    ui.label(RichText::new(format!("Unavailable columns referenced: {}. Re-enable in Source Data or remove from layout.", stale.join(", "))).color(egui::Color32::from_rgb(220, 140, 60)).size(11.0));
-                });
-                ui.add_space(4.0);
-            }
-            ui.label(RichText::new("Pick a selected data column, choose how to use it, then Add.").color(t.text_muted).size(11.0));
-            ui.add_space(6.0);
-            egui::ScrollArea::vertical().id_salt("layout_scroll").auto_shrink([false, false]).show(ui, |ui| {
-                app.sync_layout_pickers();
-                let field_names: Vec<String> = app.available_columns().into_iter().map(|(n, _)| n).collect();
-                if field_names.is_empty() {
-                    ui.label(RichText::new("Load data and select columns in Source Data to configure pivots.").color(t.text_disabled));
-                } else {
-                    layout_picker_ui(app, ui, &t, &field_names);
+    if app.show_left_panel {
+        egui::SidePanel::left("dock_left").resizable(true).default_width(290.0).min_width(220.0)
+            .frame(egui::Frame::new().fill(t.panel).stroke(egui::Stroke::new(1.0_f32, t.border)).inner_margin(egui::Margin::same(8)))
+            .show_inside(ui, |ui| {
+                match app.activity_tab {
+                    crate::app::ActivityTab::Files => {
+                        panel_header(ui, "Project & Files", Some("EXPLORER"), &t);
+                        ui.add_space(6.0);
+                        app.menu_bar(ui);
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("Datasets in Workspace").strong().color(t.text_strong));
+                        ui.add_space(4.0);
+                        if app.data_model.datasets.is_empty() {
+                            ui.label(RichText::new("No datasets added yet. Use File -> Import or Add dataset.").color(t.text_muted).size(11.5));
+                        } else {
+                            for ds in &app.data_model.datasets {
+                                ui.horizontal(|ui| {
+                                    draw_svg(ui, "bytes://database.svg", ICON_DATABASE, Vec2::new(12.0, 12.0), t.accent_cyan);
+                                    ui.label(RichText::new(&ds.alias).strong().color(t.text));
+                                });
+                            }
+                        }
+                    }
+                    crate::app::ActivityTab::Themes => {
+                        panel_header(ui, "Table Themes & Styles", Some("THEMES"), &t);
+                        ui.add_space(6.0);
+                        options_and_footer_ui(app, ui, &t);
+                    }
+                    crate::app::ActivityTab::Export => {
+                        panel_header(ui, "Export Workspace", Some("EXPORT"), &t);
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Export active worksheet or workbook to XLSX, PDF, or HTML with identical styling:").color(t.text_muted).size(11.5));
+                        ui.add_space(10.0);
+                        if ui.button("Export to Excel (.xlsx)").clicked() {
+                            let ctx = ui.ctx().clone();
+                            app.dispatch("file.export.xlsx", &Value::Null, &ctx);
+                        }
+                        ui.add_space(4.0);
+                        if ui.button("Export to HTML (.html)").clicked() {
+                            let ctx = ui.ctx().clone();
+                            app.dispatch("file.export.html", &Value::Null, &ctx);
+                        }
+                        ui.add_space(4.0);
+                        if ui.button("Export to PDF (.pdf)").clicked() {
+                            let ctx = ui.ctx().clone();
+                            app.dispatch("file.export.pdf", &Value::Null, &ctx);
+                        }
+                    }
+                    _ => {
+                        panel_header(ui, &format!("Pivot Layout - {}", app.active_sheet().name), Some("Stage PIVOT"), &t);
+                        ui.horizontal(|ui| {
+                            if ui.button("Recompute").clicked() { app.request_pivot_recompute(); }
+                            if ui.button("Clear").clicked() { app.clear_layout(); }
+                            if app.pivot_computing.is_some() { ui.spinner(); if ui.small_button("Cancel").clicked() { app.cancel_pivot(); } }
+                        });
+                        ui.add_space(4.0);
+                        let stale = app.stale_spec_refs(&app.active_spec().clone());
+                        if !stale.is_empty() {
+                            egui::Frame::new().fill(egui::Color32::from_rgba_unmultiplied(220, 120, 40, 30)).stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(220, 120, 40))).inner_margin(egui::Margin::same(6)).corner_radius(4.0).show(ui, |ui| {
+                                ui.label(RichText::new(format!("Unavailable columns referenced: {}. Re-enable in Source Data or remove from layout.", stale.join(", "))).color(egui::Color32::from_rgb(220, 140, 60)).size(11.0));
+                            });
+                            ui.add_space(4.0);
+                        }
+                        ui.label(RichText::new("Pick a selected data column, choose how to use it, then Add.").color(t.text_muted).size(11.0));
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical().id_salt("layout_scroll").auto_shrink([false, false]).show(ui, |ui| {
+                            app.sync_layout_pickers();
+                            let field_names: Vec<String> = app.available_columns().into_iter().map(|(n, _)| n).collect();
+                            if field_names.is_empty() {
+                                ui.label(RichText::new("Load data and select columns in Source Data to configure pivots.").color(t.text_disabled));
+                            } else {
+                                layout_picker_ui(app, ui, &t, &field_names);
+                            }
+                            ui.add_space(8.0);
+                            ui.separator();
+                            options_and_footer_ui(app, ui, &t);
+                        });
+                    }
                 }
-                ui.add_space(8.0);
-                ui.separator();
-                options_and_footer_ui(app, ui, &t);
             });
-        });
+    }
 
     egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::same(12))).show_inside(ui, |ui| {
         pivot_grid(app, ui, &t);
@@ -749,7 +804,15 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     let row_len = app.active_spec().rows.len();
     for (i, f) in app.active_spec().rows.clone().iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&f.name).color(t.text));
+            egui::Frame::NONE
+                .fill(t.badge_bg)
+                .stroke(Stroke::new(1.0_f32, t.border))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(5, 1))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(format!("R{i}")).size(10.0).strong().color(t.accent_cyan));
+                });
+            ui.label(RichText::new(&f.name).color(t.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("x").on_hover_text("Remove").clicked() { remove_row = Some(i); }
                 if i > 0 && ui.small_button("^").on_hover_text("Move up").clicked() { move_row = Some((i, i - 1)); }
@@ -778,7 +841,15 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     let col_subs = app.active_spec().effective_column_subtotals();
     for (i, f) in app.active_spec().columns.clone().iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&f.name).color(t.text));
+            egui::Frame::NONE
+                .fill(t.badge_bg)
+                .stroke(Stroke::new(1.0_f32, t.border))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(5, 1))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(format!("C{i}")).size(10.0).strong().color(egui::Color32::from_rgb(192, 132, 252)));
+                });
+            ui.label(RichText::new(&f.name).color(t.text_strong));
             let mut sub = *col_subs.get(i).unwrap_or(&false);
             if themed_checkbox(ui, t, &mut sub, format!("Subtotal##colsub_{sid}_{i}")).on_hover_text("Add subtotal columns for this column grouping level.").changed() {
                 toggle_col_sub = Some((i, sub));
@@ -811,7 +882,15 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     let mut remove_val: Option<usize> = None;
     for (i, v) in app.active_spec().values.clone().iter().enumerate() {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{}({})", v.aggregate.label(), v.field.name)).color(t.text));
+            egui::Frame::NONE
+                .fill(t.badge_bg)
+                .stroke(Stroke::new(1.0_f32, t.border))
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(5, 1))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(format!("V{i}")).size(10.0).strong().color(egui::Color32::from_rgb(52, 211, 153)));
+                });
+            ui.label(RichText::new(format!("{}({})", v.aggregate.label(), v.field.name)).color(t.text_strong));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("x").on_hover_text("Remove").clicked() { remove_val = Some(i); }
             });
@@ -825,8 +904,141 @@ fn layout_picker_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens, field_nam
     if let Some((n, agg)) = add_val { app.add_value_field(n, agg); }
 }
 
-fn panel_header(ui: &mut egui::Ui, title: &str, t: &Tokens) {
-    ui.label(RichText::new(title).strong().color(t.text_strong).size(13.0));
+fn panel_header(ui: &mut egui::Ui, title: &str, stage_badge: Option<&str>, t: &Tokens) {
+    ui.horizontal(|ui| {
+        draw_svg(ui, "bytes://grip-vertical.svg", ICON_GRIP_VERTICAL, Vec2::new(10.0, 14.0), t.text_muted);
+        ui.label(RichText::new(title).strong().color(t.text_strong).size(12.5));
+        if let Some(badge) = stage_badge {
+            ui.add_space(4.0);
+            egui::Frame::NONE
+                .fill(t.badge_bg)
+                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(5, 1))
+                .show(ui, |ui| {
+                    ui.label(RichText::new(badge).size(10.0).strong().color(t.accent_cyan));
+                });
+        }
+    });
+}
+
+fn diagnostics_panel(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
+    ui.horizontal(|ui| {
+        draw_svg(ui, "bytes://alert-circle.svg", ICON_ALERT_CIRCLE, Vec2::new(13.0, 13.0), t.error_text);
+        ui.label(RichText::new("Compiler Diagnostics & Problems").strong().size(12.5).color(t.text_strong));
+        ui.add_space(8.0);
+
+        let err_count = app.data_model_diagnostics.errors.len();
+        let warn_count = app.data_model_diagnostics.warnings.len();
+        let total = err_count + warn_count;
+
+        if ui.selectable_label(app.diagnostics_filter == crate::app::DiagnosticsFilter::All, format!("All ({total})")).clicked() {
+            app.diagnostics_filter = crate::app::DiagnosticsFilter::All;
+        }
+        if ui.selectable_label(app.diagnostics_filter == crate::app::DiagnosticsFilter::Errors, format!("Errors ({err_count})")).clicked() {
+            app.diagnostics_filter = crate::app::DiagnosticsFilter::Errors;
+        }
+        if ui.selectable_label(app.diagnostics_filter == crate::app::DiagnosticsFilter::Warnings, format!("Warnings ({warn_count})")).clicked() {
+            app.diagnostics_filter = crate::app::DiagnosticsFilter::Warnings;
+        }
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("✕ Close").clicked() {
+                app.diagnostics_open = false;
+            }
+        });
+    });
+    ui.add_space(6.0);
+
+    egui::ScrollArea::vertical().id_salt("diag_scroll").auto_shrink([false, false]).show(ui, |ui| {
+        let show_errors = matches!(app.diagnostics_filter, crate::app::DiagnosticsFilter::All | crate::app::DiagnosticsFilter::Errors);
+        let show_warnings = matches!(app.diagnostics_filter, crate::app::DiagnosticsFilter::All | crate::app::DiagnosticsFilter::Warnings);
+
+        let mut shown_any = false;
+
+        if show_errors {
+            for (idx, err) in app.data_model_diagnostics.errors.iter().enumerate() {
+                shown_any = true;
+                render_diagnostic_card(ui, t, "RELATION", &format!("Error #{idx}"), err, Some("Resolve relations or check key deduplication in source datasets."), true);
+            }
+            let stale = app.stale_spec_refs(&app.active_spec().clone());
+            for col in stale {
+                shown_any = true;
+                render_diagnostic_card(ui, t, "STALE_REF", &format!("Field '{col}'"), &format!("Column '{col}' is referenced in layout or filters but is not selected in Source Data."), Some("Re-enable the column in Data Model or remove it from the layout well."), true);
+            }
+        }
+
+        if show_warnings {
+            for (idx, warn) in app.data_model_diagnostics.warnings.iter().enumerate() {
+                shown_any = true;
+                render_diagnostic_card(ui, t, "SCHEMA", &format!("Warning #{idx}"), warn, Some("Check data types or verify column normalization headers."), false);
+            }
+        }
+
+        if !shown_any {
+            ui.vertical_centered(|ui| {
+                ui.add_space(10.0);
+                ui.label(RichText::new("✓ No issues detected in data model or active worksheet.").color(t.success_text).size(12.0));
+            });
+        }
+    });
+}
+
+fn render_diagnostic_card(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    category: &str,
+    location: &str,
+    message: &str,
+    tip: Option<&str>,
+    is_error: bool,
+) {
+    let (bg, border, _fg) = if is_error {
+        (t.error_bg, t.error_border, t.error_text)
+    } else {
+        (t.warning_bg, t.warning_border, t.warning_text)
+    };
+
+    egui::Frame::NONE
+        .fill(bg)
+        .stroke(Stroke::new(1.0_f32, border))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                egui::Frame::NONE
+                    .fill(border)
+                    .corner_radius(3.0)
+                    .inner_margin(egui::Margin::symmetric(5, 1))
+                    .show(ui, |ui| {
+                        ui.label(RichText::new(category).size(10.0).strong().color(Color32::WHITE));
+                    });
+                ui.label(RichText::new(location).size(11.0).color(t.text_muted));
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("📋 Copy").clicked() {
+                        ui.ctx().copy_text(format!("[{category}] {location}: {message}"));
+                    }
+                });
+            });
+            ui.add_space(3.0);
+            ui.label(RichText::new(message).size(12.0).color(t.text_strong));
+
+            if let Some(hint) = tip {
+                ui.add_space(4.0);
+                egui::Frame::NONE
+                    .fill(t.tip_bg)
+                    .stroke(Stroke::new(1.0_f32, t.tip_border))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            draw_svg(ui, "bytes://lightbulb.svg", ICON_LIGHTBULB, Vec2::new(12.0, 12.0), t.tip_text);
+                            ui.label(RichText::new(format!("Tip: {hint}")).size(11.0).color(t.tip_text));
+                        });
+                    });
+            }
+        });
+    ui.add_space(6.0);
 }
 
 fn pivot_grid(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {

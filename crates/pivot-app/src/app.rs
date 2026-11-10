@@ -105,6 +105,25 @@ impl WorksheetState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ActivityTab {
+    #[default]
+    Layout,
+    Files,
+    Model,
+    Themes,
+    Export,
+    Settings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DiagnosticsFilter {
+    #[default]
+    All,
+    Errors,
+    Warnings,
+}
+
 pub struct PivotApp {
     pub brightness: Brightness,
     pub table_color_theme: TableColorThemeId,
@@ -114,6 +133,11 @@ pub struct PivotApp {
     exit_requested: bool,
     pub on_home: bool,
     pub on_source_page: bool,
+    pub active_stage: usize,
+    pub activity_tab: ActivityTab,
+    pub show_left_panel: bool,
+    pub diagnostics_open: bool,
+    pub diagnostics_filter: DiagnosticsFilter,
     pub table: Option<DataTable>,
     pub source_name: Option<String>,
     pub loading: Option<LoadState>,
@@ -192,6 +216,7 @@ fn default_spec() -> PivotSpec {
 
 impl PivotApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         let brightness = Brightness::default();
         let tokens = Tokens::for_brightness(brightness);
         apply(&cc.egui_ctx, &tokens);
@@ -204,6 +229,11 @@ impl PivotApp {
             exit_requested: false,
             on_home: true,
             on_source_page: false,
+            active_stage: 3,
+            activity_tab: ActivityTab::Layout,
+            show_left_panel: true,
+            diagnostics_open: false,
+            diagnostics_filter: DiagnosticsFilter::All,
             table: None,
             source_name: None,
             loading: None,
@@ -1588,7 +1618,9 @@ impl eframe::App for PivotApp {
 
         let t = Tokens::get(ctx);
         egui::TopBottomPanel::top("app_bar").frame(egui::Frame::new().fill(t.app_bar)).show(ctx, |ui| { chrome::app_bar(self, ui); });
+        egui::TopBottomPanel::top("stage_ribbon").frame(egui::Frame::new().fill(t.panel_alt)).show(ctx, |ui| { chrome::stage_ribbon(self, ui); });
         egui::TopBottomPanel::bottom("status_bar").frame(egui::Frame::new().fill(t.status_bar)).show(ctx, |ui| { chrome::status_bar(self, ui); });
+        egui::SidePanel::left("activity_bar").exact_width(44.0).frame(egui::Frame::new().fill(t.app_bar)).show(ctx, |ui| { chrome::activity_bar(self, ui); });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(t.canvas)).show(ctx, |ui| { dock::show(self, ui); });
     }
 }

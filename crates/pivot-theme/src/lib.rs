@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 /// Interface brightness / color mode. Stable `id()` values are persisted/serialized.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Brightness {
-    Dark,
     #[default]
+    DerivaDark,
+    Dark,
     MediumDark,
     MediumLight,
     Light,
@@ -30,7 +31,8 @@ pub enum Brightness {
 }
 
 impl Brightness {
-    pub const ALL: [Brightness; 5] = [
+    pub const ALL: [Brightness; 6] = [
+        Brightness::DerivaDark,
         Brightness::Dark,
         Brightness::MediumDark,
         Brightness::MediumLight,
@@ -40,6 +42,7 @@ impl Brightness {
 
     pub fn label(self) -> &'static str {
         match self {
+            Brightness::DerivaDark => "Deriva Dark",
             Brightness::Dark => "Dark",
             Brightness::MediumDark => "Medium Dark",
             Brightness::MediumLight => "Medium Light",
@@ -50,6 +53,7 @@ impl Brightness {
 
     pub fn id(self) -> &'static str {
         match self {
+            Brightness::DerivaDark => "derivaDark",
             Brightness::Dark => "dark",
             Brightness::MediumDark => "mediumDark",
             Brightness::MediumLight => "mediumLight",
@@ -94,6 +98,22 @@ pub struct Tokens {
     pub divider: Color32,
     pub status_bar: Color32,
     pub focus: Color32,
+    /// Diagnostic & card surfaces (Deriva style)
+    pub card_bg: Color32,
+    pub card_border: Color32,
+    pub badge_bg: Color32,
+    pub error_bg: Color32,
+    pub error_border: Color32,
+    pub error_text: Color32,
+    pub warning_bg: Color32,
+    pub warning_border: Color32,
+    pub warning_text: Color32,
+    pub tip_bg: Color32,
+    pub tip_border: Color32,
+    pub tip_text: Color32,
+    pub success_bg: Color32,
+    pub success_text: Color32,
+    pub accent_cyan: Color32,
     /// Constant inks for [`crate::color::text_on`]: readable on light/dark fills
     /// regardless of brightness mode. Fills may be literal per table color theme;
     /// text never is.
@@ -104,6 +124,47 @@ pub struct Tokens {
 impl Tokens {
     pub fn for_brightness(b: Brightness) -> Self {
         match b {
+            Brightness::DerivaDark => Self {
+                dark: true,
+                app_bar: hex(0x0e131f),
+                panel: hex(0x131926),
+                panel_alt: hex(0x182030),
+                canvas: hex(0x0a0e17),
+                grid_header: hex(0x1c2538),
+                grid_body: hex(0x111624),
+                grid_line: hex(0x222e45),
+                text: hex(0xd5deeb),
+                text_strong: hex(0xf8fafc),
+                text_muted: hex(0x8fa0b8),
+                text_disabled: hex(0x56657a),
+                accent: hex(0x3b82f6),
+                accent_strong: hex(0x2563eb),
+                selection: Color32::from_rgba_unmultiplied(30, 90, 220, 160),
+                hover: hex(0x232e44),
+                input_bg: hex(0x0e1422),
+                input_border: hex(0x2a3952),
+                border: hex(0x202b3e),
+                divider: hex(0x1c2637),
+                status_bar: hex(0x090d15),
+                focus: hex(0x60a5fa),
+                card_bg: hex(0x131926),
+                card_border: hex(0x222f47),
+                badge_bg: hex(0x1e2a3f),
+                error_bg: hex(0x291216),
+                error_border: hex(0x822735),
+                error_text: hex(0xf87171),
+                warning_bg: hex(0x2a1e0f),
+                warning_border: hex(0x855018),
+                warning_text: hex(0xfbbf24),
+                tip_bg: hex(0x0f1c30),
+                tip_border: hex(0x203a60),
+                tip_text: hex(0x93c5fd),
+                success_bg: hex(0x0d281a),
+                success_text: hex(0x34d399),
+                accent_cyan: hex(0x38bdf8),
+                ink_on_light: hex(0x111827),
+                ink_on_dark: hex(0xf8fafc),
+            },
             Brightness::Dark => Self {
                 dark: true,
                 app_bar: hex(0x1f2329),
@@ -129,6 +190,21 @@ impl Tokens {
                 divider: hex(0x323a48),
                 status_bar: hex(0x1b2028),
                 focus: hex(0x60a5fa),
+                card_bg: hex(0x262b33),
+                card_border: hex(0x3a4354),
+                badge_bg: hex(0x323a48),
+                error_bg: hex(0x331a1e),
+                error_border: hex(0x732932),
+                error_text: hex(0xf87171),
+                warning_bg: hex(0x332617),
+                warning_border: hex(0x7c4f1c),
+                warning_text: hex(0xfbbf24),
+                tip_bg: hex(0x1a2638),
+                tip_border: hex(0x2e4a6e),
+                tip_text: hex(0x93c5fd),
+                success_bg: hex(0x133020),
+                success_text: hex(0x34d399),
+                accent_cyan: hex(0x38bdf8),
                 ink_on_light: hex(0x111827),
                 ink_on_dark: hex(0xf5f7fb),
             },
@@ -156,6 +232,21 @@ impl Tokens {
                 divider: hex(0x404a59),
                 status_bar: hex(0x262c36),
                 focus: hex(0x7ab0f5),
+                card_bg: hex(0x333a46),
+                card_border: hex(0x4a5568),
+                badge_bg: hex(0x3d4656),
+                error_bg: hex(0x3d1f24),
+                error_border: hex(0x8a333d),
+                error_text: hex(0xf87171),
+                warning_bg: hex(0x3d2e1c),
+                warning_border: hex(0x935f23),
+                warning_text: hex(0xfbbf24),
+                tip_bg: hex(0x223249),
+                tip_border: hex(0x3a5d8b),
+                tip_text: hex(0x93c5fd),
+                success_bg: hex(0x193b27),
+                success_text: hex(0x34d399),
+                accent_cyan: hex(0x38bdf8),
                 ink_on_light: hex(0x111827),
                 ink_on_dark: hex(0xf5f7fb),
             },
@@ -182,6 +273,21 @@ impl Tokens {
                 divider: hex(0xc7ced9),
                 status_bar: hex(0xd4d9e1),
                 focus: hex(0x2563eb),
+                card_bg: hex(0xf2f4f7),
+                card_border: hex(0xb8c1ce),
+                badge_bg: hex(0xd9dde3),
+                error_bg: hex(0xfef2f2),
+                error_border: hex(0xfca5a5),
+                error_text: hex(0xb91c1c),
+                warning_bg: hex(0xfffbeb),
+                warning_border: hex(0xfcd34d),
+                warning_text: hex(0xb45309),
+                tip_bg: hex(0xeff6ff),
+                tip_border: hex(0xbfdbfe),
+                tip_text: hex(0x1d4ed8),
+                success_bg: hex(0xf0fdf4),
+                success_text: hex(0x15803d),
+                accent_cyan: hex(0x0284c7),
                 ink_on_light: hex(0x111827),
                 ink_on_dark: hex(0xf5f7fb),
             },
@@ -208,6 +314,21 @@ impl Tokens {
                 divider: hex(0xe2e6ec),
                 status_bar: hex(0xeef0f3),
                 focus: hex(0x2563eb),
+                card_bg: hex(0xffffff),
+                card_border: hex(0xd1d5db),
+                badge_bg: hex(0xe5e7eb),
+                error_bg: hex(0xfef2f2),
+                error_border: hex(0xfca5a5),
+                error_text: hex(0xb91c1c),
+                warning_bg: hex(0xfffbeb),
+                warning_border: hex(0xfcd34d),
+                warning_text: hex(0xb45309),
+                tip_bg: hex(0xeff6ff),
+                tip_border: hex(0xbfdbfe),
+                tip_text: hex(0x1d4ed8),
+                success_bg: hex(0xf0fdf4),
+                success_text: hex(0x15803d),
+                accent_cyan: hex(0x0284c7),
                 ink_on_light: hex(0x111827),
                 ink_on_dark: hex(0xf5f7fb),
             },
@@ -234,6 +355,21 @@ impl Tokens {
                 divider: hex(0xffffff),
                 status_bar: hex(0x000000),
                 focus: hex(0x00ffff),
+                card_bg: hex(0x000000),
+                card_border: hex(0xffffff),
+                badge_bg: hex(0x1a1a1a),
+                error_bg: hex(0x3a0000),
+                error_border: hex(0xff0000),
+                error_text: hex(0xffffff),
+                warning_bg: hex(0x3a2500),
+                warning_border: hex(0xffaa00),
+                warning_text: hex(0xffffff),
+                tip_bg: hex(0x001a3a),
+                tip_border: hex(0x00aaff),
+                tip_text: hex(0xffffff),
+                success_bg: hex(0x003a10),
+                success_text: hex(0xffffff),
+                accent_cyan: hex(0x00ffff),
                 ink_on_light: Color32::BLACK,
                 ink_on_dark: Color32::WHITE,
             },
@@ -310,11 +446,12 @@ mod tests {
 
     #[test]
     fn brightness_has_stable_ids_and_roundtrip() {
-        assert_eq!(Brightness::ALL.len(), 5);
+        assert_eq!(Brightness::ALL.len(), 6);
         for b in Brightness::ALL {
             assert_eq!(Brightness::parse(b.id()), Some(b));
             assert_eq!(Brightness::parse(b.label()), Some(b));
         }
+        assert_eq!(Brightness::parse("derivaDark"), Some(Brightness::DerivaDark));
         assert_eq!(Brightness::parse("highContrast"), Some(Brightness::HighContrast));
         assert_eq!(Brightness::parse("nope"), None);
     }

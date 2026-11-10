@@ -5,6 +5,7 @@ mod chrome;
 #[macro_use]
 mod devlog;
 mod dock;
+pub mod icons;
 mod menus;
 mod pivot_grid;
 
