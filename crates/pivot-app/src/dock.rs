@@ -882,6 +882,30 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         app.active_spec_mut().subtotals.row_subtotals = row_sub;
         app.request_pivot_recompute();
     }
+    if row_sub {
+        ui.indent(format!("row_sub_indent_{}", app.active_worksheet), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Row subtotal text:").size(11.0).color(t.text_muted));
+                let mut label_val = app.active_spec().subtotals.row_subtotal_label.clone().unwrap_or_default();
+                let auto_hint = match app.active_spec().output_language {
+                    pivot_core::OutputLanguage::En | pivot_core::OutputLanguage::IdEn => "{prefix} Subtotal",
+                    pivot_core::OutputLanguage::Id => "Subtotal {prefix}",
+                };
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut label_val)
+                        .hint_text(auto_hint)
+                        .id(egui::Id::new(("row_sub_label", app.active_worksheet)))
+                        .desired_width(130.0)
+                ).on_hover_text("Template for row subtotals. Use {prefix} for group name (e.g. '{prefix} Subtotal' or 'Subtotal {prefix}' or 'Total').");
+                if resp.changed() {
+                    app.set_row_subtotal_label(if label_val.trim().is_empty() { None } else { Some(label_val) });
+                }
+                if app.active_spec().subtotals.row_subtotal_label.is_some() && ui.small_button("↺").on_hover_text("Reset to auto").clicked() {
+                    app.set_row_subtotal_label(None);
+                }
+            });
+        });
+    }
     let mut col_tot = app.active_spec().subtotals.column_totals;
     let col_tot_enabled = !app.active_spec().columns.is_empty();
     ui.add_enabled_ui(col_tot_enabled, |ui| {
@@ -891,6 +915,26 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         {
             app.active_spec_mut().subtotals.column_totals = col_tot;
             app.request_pivot_recompute();
+        }
+        if col_tot {
+            ui.indent(format!("col_tot_indent_{}", app.active_worksheet), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Column total text:").size(11.0).color(t.text_muted));
+                    let mut label_val = app.active_spec().subtotals.column_total_label.clone().unwrap_or_default();
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut label_val)
+                            .hint_text("Total")
+                            .id(egui::Id::new(("col_tot_label", app.active_worksheet)))
+                            .desired_width(110.0)
+                    ).on_hover_text("Header label for the total column (e.g. 'Total', 'Grand Total', 'Total Keseluruhan').");
+                    if resp.changed() {
+                        app.set_column_total_label(if label_val.trim().is_empty() { None } else { Some(label_val) });
+                    }
+                    if app.active_spec().subtotals.column_total_label.is_some() && ui.small_button("↺").on_hover_text("Reset to auto").clicked() {
+                        app.set_column_total_label(None);
+                    }
+                });
+            });
         }
     });
 
@@ -961,10 +1005,27 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
         let mut remove: Option<usize> = None;
         let mut mov: Option<(usize, usize)> = None;
         let mut decimals_change: Option<(usize, Option<u8>)> = None;
+        let mut label_change: Option<(usize, Option<String>)> = None;
         let len = bands.len();
+        let lang = app.active_spec().output_language;
         for (i, b) in bands.iter().enumerate() {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("{:?}: {}", b.kind, b.effective_label())).color(t.text).size(12.0));
+                ui.label(RichText::new(format!("{:?}:", b.kind)).strong().color(t.text_strong).size(11.5));
+                let mut current_label = b.label.clone().unwrap_or_default();
+                let hint = b.effective_label_lang(lang);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut current_label)
+                        .hint_text(&hint)
+                        .id(egui::Id::new(("footer_band_label", app.active_worksheet, i)))
+                        .desired_width(120.0),
+                ).on_hover_text("Custom label for this footer band. Leave empty for default.");
+                if resp.changed() {
+                    let new_val = if current_label.trim().is_empty() { None } else { Some(current_label) };
+                    label_change = Some((i, new_val));
+                }
+                if b.label.is_some() && ui.small_button("↺").on_hover_text("Reset to auto").clicked() {
+                    label_change = Some((i, None));
+                }
                 if matches!(b.kind, pivot_core::FooterBandKind::Average) {
                     let current = b.decimals.map(|d| d.to_string()).unwrap_or_else(|| "auto".to_string());
                     egui::ComboBox::from_id_salt(("avg_decimals", app.active_worksheet, i)).width(68.0).selected_text(format!("dec: {current}")).show_ui(ui, |ui| {
@@ -979,7 +1040,8 @@ fn options_and_footer_ui(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
                 if i + 1 < len && ui.small_button("v").clicked() { mov = Some((i, i + 1)); }
             });
         }
-        if let Some((i, dec)) = decimals_change { app.set_footer_band_decimals(i, dec); }
+        if let Some((i, val)) = label_change { app.set_footer_band_label(i, val); }
+        else if let Some((i, dec)) = decimals_change { app.set_footer_band_decimals(i, dec); }
         else if let Some(i) = remove { app.remove_footer_band(i); }
         else if let Some((a, b)) = mov { app.move_footer_band(a, b); }
     }
@@ -1253,11 +1315,11 @@ fn render_diagnostic_card(
 }
 
 fn pivot_grid(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
-    if let Some(model) = app.active_model() {
+    if let Some(model) = app.active_model().cloned() {
         ui.label(RichText::new(&model.title).strong().color(t.text_strong).size(16.0));
         ui.label(RichText::new(format!("Worksheet: {}  |  Theme: {} / {}", app.active_sheet().name, app.table_color_theme.label(), app.table_border_theme.label())).color(t.text_muted).size(11.0));
         ui.add_space(6.0);
-        render_model(model, ui, t, app.brightness, app.table_color_theme, app.table_border_theme);
+        render_model(app, &model, ui, t);
     } else if app.table.is_some() {
         ui.label(RichText::new("Pivot Grid").strong().color(t.text_strong).size(16.0));
         let spec = app.active_spec();
@@ -1299,8 +1361,8 @@ fn pivot_grid(app: &mut PivotApp, ui: &mut egui::Ui, t: &Tokens) {
     }
 }
 
-fn render_model(model: &ThemedTableModel, ui: &mut egui::Ui, t: &Tokens, brightness: pivot_theme::Brightness, color_theme: pivot_theme::table::TableColorThemeId, border_theme: pivot_theme::table::BorderThemeId) {
-    crate::pivot_grid::show(ui, model, t, brightness, color_theme, border_theme);
+fn render_model(app: &mut PivotApp, model: &ThemedTableModel, ui: &mut egui::Ui, t: &Tokens) {
+    crate::pivot_grid::show(app, ui, model, t);
 }
 
 fn op_label(op: FilterOp) -> &'static str { match op { FilterOp::Equals => "Equals", FilterOp::NotEquals => "Not equals", FilterOp::Include => "Include", FilterOp::Exclude => "Exclude" } }

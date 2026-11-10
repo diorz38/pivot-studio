@@ -3,8 +3,10 @@
 
 use egui::{FontId, Id, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use pivot_core::model::{CellRole, ThemedTableModel};
-use pivot_theme::table::{BorderThemeId, CellBorderMode, TableColorThemeId, TableStyle};
-use pivot_theme::{Brightness, Tokens};
+use pivot_core::spec::FooterBandSpec;
+use pivot_theme::table::{CellBorderMode, TableStyle};
+use pivot_theme::Tokens;
+use crate::app::PivotApp;
 
 const PAD_X: f32 = 10.0;
 
@@ -21,6 +23,23 @@ fn cell_font(text: &str, size: f32) -> (egui::FontId, bool) {
 const MIN_COL_W: f32 = 50.0;
 const RESIZE_HIT: f32 = 5.0;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GridEditTarget {
+    GrandTotal,
+    RowSubtotal,
+    ColumnTotal,
+    ColumnSubtotal,
+    FooterBand(usize),
+}
+
+#[derive(Clone, Debug)]
+pub struct GridEditSession {
+    pub target: GridEditTarget,
+    pub text: String,
+    pub original: String,
+    pub initial_focus_done: bool,
+}
+
 #[derive(Clone, Default)]
 pub struct GridUiState {
     pub col_widths: Vec<f32>,
@@ -29,6 +48,7 @@ pub struct GridUiState {
     pub sel_anchor: Option<(usize, usize)>,
     pub sel_focus: Option<(usize, usize)>,
     pub copy_status: Option<String>,
+    pub active_edit: Option<GridEditSession>,
 }
 
 impl GridUiState {
@@ -83,18 +103,118 @@ fn ensure_widths(state: &mut GridUiState, model: &ThemedTableModel) {
     }
 }
 
+pub fn target_for_cell(
+    model: &ThemedTableModel,
+    header_rows_n: usize,
+    vr: usize,
+    vc: usize,
+) -> Option<GridEditTarget> {
+    if vr < header_rows_n {
+        if let Some(row) = model.header_rows.get(vr) {
+            let mut ci = 0;
+            for cell in row {
+                let cs = cell.colspan.max(1);
+                if vc >= ci && vc < ci + cs {
+                    let lower = cell.text.to_lowercase();
+                    if lower.contains("subtotal") {
+                        return Some(GridEditTarget::ColumnSubtotal);
+                    }
+                    if cell.text.eq_ignore_ascii_case("total") || lower.contains("total") {
+                        return Some(GridEditTarget::ColumnTotal);
+                    }
+                    break;
+                }
+                ci += cs;
+            }
+        }
+        return None;
+    }
+    let body_len = model.body_rows.len();
+    if vr < header_rows_n + body_len {
+        let ri = vr - header_rows_n;
+        if let Some(row) = model.body_rows.get(ri) {
+            if row.iter().any(|c| matches!(c.role, CellRole::Subtotal)) {
+                return Some(GridEditTarget::RowSubtotal);
+            }
+        }
+        return None;
+    }
+    let fi = vr - (header_rows_n + body_len);
+    if let Some(band) = model.footer_bands.get(fi) {
+        if matches!(band.kind, pivot_core::model::FooterBandKind::GrandTotal)
+            || band.cells.iter().any(|c| matches!(c.role, CellRole::GrandTotal))
+        {
+            return Some(GridEditTarget::GrandTotal);
+        }
+        return Some(GridEditTarget::FooterBand(fi));
+    }
+    None
+}
+
+fn start_edit(state: &mut GridUiState, target: GridEditTarget, app: &PivotApp) {
+    if let Some(ref edit) = state.active_edit {
+        if edit.target == target {
+            return;
+        }
+    }
+    let (current, auto_hint) = match target {
+        GridEditTarget::GrandTotal => {
+            let cur = app.active_spec().subtotals.grand_total_label.clone();
+            let auto = FooterBandSpec::grand_total().effective_label_lang(app.active_spec().output_language);
+            (cur, auto)
+        }
+        GridEditTarget::RowSubtotal => {
+            let cur = app.active_spec().subtotals.row_subtotal_label.clone();
+            let auto = match app.active_spec().output_language {
+                pivot_core::OutputLanguage::En | pivot_core::OutputLanguage::IdEn => "{prefix} Subtotal".to_string(),
+                pivot_core::OutputLanguage::Id => "Subtotal {prefix}".to_string(),
+            };
+            (cur, auto)
+        }
+        GridEditTarget::ColumnTotal => {
+            let cur = app.active_spec().subtotals.column_total_label.clone();
+            (cur, "Total".to_string())
+        }
+        GridEditTarget::ColumnSubtotal => {
+            let cur = app.active_spec().subtotals.column_subtotal_label.clone();
+            (cur, "{prefix} Subtotal".to_string())
+        }
+        GridEditTarget::FooterBand(idx) => {
+            let bands = app.active_spec().effective_footer_bands();
+            let cur = bands.get(idx).and_then(|b| b.label.clone());
+            let auto = bands
+                .get(idx)
+                .map(|b| b.effective_label_lang(app.active_spec().output_language))
+                .unwrap_or_else(|| "Footer".to_string());
+            (cur, auto)
+        }
+    };
+    let initial_text = current.unwrap_or(auto_hint.clone());
+    state.active_edit = Some(GridEditSession {
+        target,
+        text: initial_text,
+        original: auto_hint,
+        initial_focus_done: false,
+    });
+}
+
 pub fn show(
+    app: &mut PivotApp,
     ui: &mut Ui,
     model: &ThemedTableModel,
     t: &Tokens,
-    brightness: Brightness,
-    color_theme: TableColorThemeId,
-    border_theme: BorderThemeId,
 ) {
+    let brightness = app.brightness;
+    let color_theme = app.table_color_theme;
+    let border_theme = app.table_border_theme;
     let style = TableStyle::resolve(color_theme, border_theme, brightness, t);
     let grid_id = ui.id().with("pivot_grid_state");
     let mut state = GridUiState::load(ui.ctx(), grid_id);
     ensure_widths(&mut state, model);
+
+    let header_rows_n = model.header_rows.len();
+    let sel_target = state.selection().and_then(|(r0, c0, _, _)| target_for_cell(model, header_rows_n, r0, c0));
+    let mut trigger_edit = None;
 
     ui.horizontal(|ui| {
         if let Some(msg) = &state.copy_status {
@@ -113,15 +233,91 @@ pub fn show(
                 copy_selection(ui.ctx(), model, &state);
                 state.copy_status = Some("Selection copied as TSV.".to_string());
             }
+            if let Some(ref target) = sel_target {
+                let btn_text = match target {
+                    GridEditTarget::GrandTotal => "✎ Edit Grand Total",
+                    GridEditTarget::RowSubtotal => "✎ Edit Subtotal",
+                    GridEditTarget::ColumnTotal => "✎ Edit Column Total",
+                    GridEditTarget::ColumnSubtotal => "✎ Edit Col Subtotal",
+                    GridEditTarget::FooterBand(_) => "✎ Edit Footer Band",
+                };
+                if ui.small_button(btn_text).on_hover_text("Edit this label directly").clicked() {
+                    trigger_edit = Some(target.clone());
+                }
+            }
         });
     });
+    if let Some(target) = trigger_edit {
+        start_edit(&mut state, target, app);
+    }
+
+    let mut apply_edit: Option<(GridEditTarget, Option<String>)> = None;
+    let mut cancel_edit = false;
+
+    if let Some(ref mut edit) = state.active_edit {
+        ui.add_space(2.0);
+        egui::Frame::NONE
+            .fill(t.badge_bg)
+            .stroke(Stroke::new(1.0_f32, t.accent_cyan))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let target_name = match edit.target {
+                        GridEditTarget::GrandTotal => "Grand Total label",
+                        GridEditTarget::RowSubtotal => "Row Subtotal template",
+                        GridEditTarget::ColumnTotal => "Column Total label",
+                        GridEditTarget::ColumnSubtotal => "Column Subtotal template",
+                        GridEditTarget::FooterBand(_) => "Footer Band label",
+                    };
+                    ui.label(egui::RichText::new(format!("✎ {target_name}:")).strong().color(t.accent_cyan));
+                    let edit_id = grid_id.with("active_edit_input");
+                    let text_resp = ui.add(
+                        egui::TextEdit::singleline(&mut edit.text)
+                            .hint_text(&edit.original)
+                            .id(edit_id)
+                            .desired_width(220.0),
+                    );
+                    if !edit.initial_focus_done {
+                        text_resp.request_focus();
+                        edit.initial_focus_done = true;
+                    }
+                    let enter_pressed = text_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.button("Apply").clicked() || enter_pressed {
+                        let text = edit.text.trim().to_string();
+                        apply_edit = Some((edit.target.clone(), if text.is_empty() { None } else { Some(text) }));
+                    }
+                    if ui.button("Reset to Auto").clicked() {
+                        apply_edit = Some((edit.target.clone(), None));
+                    }
+                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        cancel_edit = true;
+                    }
+                });
+            });
+        ui.add_space(2.0);
+    }
+
+    if let Some((target, val)) = apply_edit {
+        match target {
+            GridEditTarget::GrandTotal => app.set_grand_total_label(val),
+            GridEditTarget::RowSubtotal => app.set_row_subtotal_label(val),
+            GridEditTarget::ColumnTotal => app.set_column_total_label(val),
+            GridEditTarget::ColumnSubtotal => app.set_column_subtotal_label(val),
+            GridEditTarget::FooterBand(idx) => app.set_footer_band_label(idx, val),
+        }
+        state.active_edit = None;
+    }
+    if cancel_edit {
+        state.active_edit = None;
+    }
+
     ui.add_space(4.0);
 
     let col_count = state.col_widths.len();
     let total_w: f32 = state.col_widths.iter().sum();
     let row_h = style.row_height;
     let header_h_unit = style.header_height;
-    let header_rows_n = model.header_rows.len();
     let header_h = header_rows_n as f32 * header_h_unit;
     let footer_rows_n = model.footer_bands.len();
     let body_h = model.body_rows.len() as f32 * row_h;
@@ -142,22 +338,59 @@ pub fn show(
     let mut x_offset: f32 = ui.ctx().data(|d| d.get_temp::<f32>(grid_id.with("xoff")).unwrap_or(0.0));
 
     // Header strip
-    let (header_rect, _) = ui.allocate_exact_size(Vec2::new(avail.x.max(200.0), header_h), Sense::hover());
+    let (header_rect, header_resp) = ui.allocate_exact_size(Vec2::new(avail.x.max(200.0), header_h), Sense::click());
+    if header_resp.double_clicked() {
+        if let Some(pos) = header_resp.interact_pointer_pos() {
+            let local_x = pos.x - header_rect.min.x + x_offset;
+            let mut x = 0.0;
+            let mut ci = state.col_widths.len().saturating_sub(1);
+            for (i, w) in state.col_widths.iter().enumerate() {
+                if local_x < x + *w { ci = i; break; }
+                x += *w;
+            }
+            let local_y = (pos.y - header_rect.min.y).max(0.0);
+            let ri = ((local_y / header_h_unit) as usize).min(header_rows_n.saturating_sub(1));
+            if let Some(target) = target_for_cell(model, header_rows_n, ri, ci) {
+                start_edit(&mut state, target, app);
+            }
+        }
+    }
     paint_header(ui, model, &style, &state.col_widths, header_rect, x_offset, header_h_unit);
     // Resize handles in header
     handle_resize(ui, &mut state.col_widths, header_rect, x_offset, col_count);
 
+    let mut double_click_target = None;
     let body_out = body_scroll.show(ui, |ui| {
         let (content_rect, response) = ui.allocate_exact_size(Vec2::new(total_w.max(100.0), content_h.max(row_h)), Sense::click_and_drag());
         let painter = ui.painter_at(content_rect.intersect(ui.clip_rect()));
         paint_body_and_footer(&painter, model, &style, &state, content_rect, header_rows_n, row_h);
         paint_selection_outline(&painter, &state, content_rect, header_rows_n, row_h, &style, model);
-        handle_selection(ui.ctx(), &response, model, &mut state, content_rect, header_rows_n, row_h);
+        double_click_target = handle_selection(ui.ctx(), &response, model, &mut state, content_rect, header_rows_n, row_h);
         response
     });
-    // Right-click menu on the grid body mirrors the toolbar copy actions.
+    if let Some(target) = double_click_target {
+        start_edit(&mut state, target, app);
+    }
+
+    // Right-click menu on the grid body
+    let mut context_edit_target = None;
     body_out.inner.context_menu(|ui| {
         let has_sel = state.selection().is_some();
+        let sel_target = state.selection().and_then(|(r0, c0, _, _)| target_for_cell(model, header_rows_n, r0, c0));
+        if let Some(ref target) = sel_target {
+            let label = match target {
+                GridEditTarget::GrandTotal => "✎ Edit Grand Total label...",
+                GridEditTarget::RowSubtotal => "✎ Edit Subtotal template...",
+                GridEditTarget::ColumnTotal => "✎ Edit Column Total label...",
+                GridEditTarget::ColumnSubtotal => "✎ Edit Column Subtotal template...",
+                GridEditTarget::FooterBand(_) => "✎ Edit Footer Band label...",
+            };
+            if ui.button(label).clicked() {
+                context_edit_target = Some(target.clone());
+                ui.close_menu();
+            }
+            ui.separator();
+        }
         if ui.add_enabled(has_sel, egui::Button::new("Copy selection (TSV)")).clicked() {
             copy_selection(ui.ctx(), model, &state);
             state.copy_status = Some("Selection copied as TSV.".to_string());
@@ -173,6 +406,9 @@ pub fn show(
             ui.close_menu();
         }
     });
+    if let Some(target) = context_edit_target {
+        start_edit(&mut state, target, app);
+    }
     // capture horizontal offset (egui 0.31: state.offset)
     x_offset = body_out.state.offset.x;
     ui.ctx().data_mut(|d| d.insert_temp(grid_id.with("xoff"), x_offset));
@@ -363,7 +599,23 @@ fn paint_body_and_footer(painter: &egui::Painter, model: &ThemedTableModel, styl
     }
 }
 
-fn handle_selection(ctx: &egui::Context, response: &egui::Response, model: &ThemedTableModel, state: &mut GridUiState, rect: Rect, header_rows_n: usize, row_h: f32) {
+fn handle_selection(
+    ctx: &egui::Context,
+    response: &egui::Response,
+    model: &ThemedTableModel,
+    state: &mut GridUiState,
+    rect: Rect,
+    header_rows_n: usize,
+    row_h: f32,
+) -> Option<GridEditTarget> {
+    let mut edit_target = None;
+    if response.double_clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model, row_h) {
+                edit_target = target_for_cell(model, header_rows_n, vr, vc);
+            }
+        }
+    }
     if response.clicked() || response.drag_started() {
         if let Some(pos) = response.interact_pointer_pos() {
             if let Some((vr, vc)) = pos_to_cell(pos, rect, &state.col_widths, header_rows_n, model, row_h) {
@@ -380,6 +632,7 @@ fn handle_selection(ctx: &egui::Context, response: &egui::Response, model: &Them
             }
         }
     }
+    edit_target
 }
 
 fn pos_to_cell(pos: Pos2, rect: Rect, col_widths: &[f32], header_rows_n: usize, model: &ThemedTableModel, row_h: f32) -> Option<(usize, usize)> {

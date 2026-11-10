@@ -32,7 +32,7 @@ pub struct ResolvedModel {
 /// - Preserves every base row (no inner-join row filtering).
 /// - Must not multiply base rows: duplicate lookup keys are a validation error.
 /// - Unmatched/null keys produce null labels.
-/// Legacy `Inner` relations are rejected (they would filter base rows).
+/// - Legacy `Inner` relations are rejected (they would filter base rows).
 pub fn resolve_model(model: &ProjectDataModel, opts: &DatasetLoadOptions, cancel: Option<&AtomicBool>) -> Result<ResolvedModel> {
     let mut diag = ResolveDiagnostics::default();
     let mut loaded: BTreeMap<String, LoadedDataset> = BTreeMap::new();

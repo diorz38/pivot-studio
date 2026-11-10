@@ -27,11 +27,11 @@ enum ColSlot {
     GrandTotal,
 }
 
-fn col_subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage) -> String {
-    subtotal_label(prefix, lang)
+fn col_subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage, custom: Option<&str>) -> String {
+    subtotal_label(prefix, lang, custom)
 }
 
-fn build_col_slots(col_key_vec: &[Key], levels: usize, sub_flags: &[bool], lang: crate::spec::OutputLanguage, show_grand: bool) -> Vec<ColSlot> {
+fn build_col_slots(col_key_vec: &[Key], levels: usize, sub_flags: &[bool], lang: crate::spec::OutputLanguage, show_grand: bool, col_sub_tmpl: Option<&str>) -> Vec<ColSlot> {
     if levels == 0 || col_key_vec.is_empty() {
         let mut slots = Vec::new();
         if show_grand { slots.push(ColSlot::GrandTotal); }
@@ -50,7 +50,7 @@ fn build_col_slots(col_key_vec: &[Key], levels: usize, sub_flags: &[bool], lang:
                     if !emitted.contains(&key) {
                         emitted.insert(key);
                         let plabel = prev_p.last().cloned().unwrap_or_default();
-                        slots.push(ColSlot::Subtotal { level, prefix: prev_p, label: col_subtotal_label(&plabel, lang) });
+                        slots.push(ColSlot::Subtotal { level, prefix: prev_p, label: col_subtotal_label(&plabel, lang, col_sub_tmpl) });
                     }
                 }
             }
@@ -65,7 +65,7 @@ fn build_col_slots(col_key_vec: &[Key], levels: usize, sub_flags: &[bool], lang:
         if !emitted.contains(&key) {
             emitted.insert(key);
             let plabel = p.last().cloned().unwrap_or_default();
-            slots.push(ColSlot::Subtotal { level, prefix: p, label: col_subtotal_label(&plabel, lang) });
+            slots.push(ColSlot::Subtotal { level, prefix: p, label: col_subtotal_label(&plabel, lang, col_sub_tmpl) });
         }
     }
     if show_grand {
@@ -291,12 +291,16 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
     let col_slots: Vec<ColSlot> = if spec.columns.is_empty() {
         vec![ColSlot::Data(Key(vec![]))]
     } else {
-        build_col_slots(&col_key_vec, spec.columns.len(), &col_sub_flags, lang, show_grand_col)
+        build_col_slots(&col_key_vec, spec.columns.len(), &col_sub_flags, lang, show_grand_col, spec.subtotals.column_subtotal_label.as_deref())
     };
-    let grand_label = match lang {
-        crate::spec::OutputLanguage::En => "Total".to_string(),
-        crate::spec::OutputLanguage::Id => "Total".to_string(),
-        crate::spec::OutputLanguage::IdEn => "Total".to_string(),
+    let grand_label = if let Some(custom) = spec.subtotals.column_total_label.as_deref().filter(|s| !s.trim().is_empty()) {
+        custom.to_string()
+    } else {
+        match lang {
+            crate::spec::OutputLanguage::En => "Total".to_string(),
+            crate::spec::OutputLanguage::Id => "Total".to_string(),
+            crate::spec::OutputLanguage::IdEn => "Total".to_string(),
+        }
     };
     let total_cols = row_header_cols + col_slots.len() * value_count.max(1);
 
@@ -438,7 +442,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
                 for level in (cl..row_header_cols.saturating_sub(1)).rev() {
                     if level >= prev_keys.len() { continue; }
                     let prefix = prev_keys[..=level].to_vec();
-                    let label = subtotal_label(&prev_keys[level], lang);
+                    let label = subtotal_label(&prev_keys[level], lang, spec.subtotals.row_subtotal_label.as_deref());
                     let mut row = Vec::new();
                     for i in 0..row_header_cols {
                         if i == 0 { row.push(Cell::new(label.clone(), CellRole::Subtotal).indented(level)); }
@@ -534,7 +538,7 @@ pub fn compute(table: &DataTable, spec: &PivotSpec) -> ThemedTableModel {
         for level in (0..row_header_cols.saturating_sub(1)).rev() {
             if level >= prev_keys.len() { continue; }
             let prefix = prev_keys[..=level].to_vec();
-            let label = subtotal_label(&prev_keys[level], lang);
+            let label = subtotal_label(&prev_keys[level], lang, spec.subtotals.row_subtotal_label.as_deref());
             let mut row = Vec::new();
             for i in 0..row_header_cols {
                 if i == 0 { row.push(Cell::new(label.clone(), CellRole::Subtotal).indented(level)); }
@@ -813,7 +817,21 @@ fn auto_title(spec: &PivotSpec) -> String {
     out
 }
 
-fn subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage) -> String {
+fn subtotal_label(prefix: &str, lang: crate::spec::OutputLanguage, custom: Option<&str>) -> String {
+    if let Some(c) = custom {
+        let t = c.trim();
+        if !t.is_empty() {
+            if t.contains("{prefix}") {
+                return t.replace("{prefix}", prefix);
+            } else if t.contains("{name}") {
+                return t.replace("{name}", prefix);
+            } else if t.contains("{group}") {
+                return t.replace("{group}", prefix);
+            } else {
+                return t.to_string();
+            }
+        }
+    }
     use crate::spec::OutputLanguage::*;
     match lang {
         En => format!("{prefix} Subtotal"),
@@ -939,7 +957,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: true, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: true, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -957,7 +975,7 @@ mod tests {
             rows: vec![FieldRef::new("Region")],
             columns: vec![FieldRef::new("Product")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -977,7 +995,7 @@ mod tests {
                 ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
                 ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
             ],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -1094,7 +1112,7 @@ mod tests {
                 ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None },
                 ValueField { field: FieldRef::new("Qty"), aggregate: Aggregate::Count, display_name: None },
             ],
-            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let start = Instant::now();
@@ -1126,7 +1144,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region"), FieldRef::new("City")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -1149,7 +1167,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false, column_totals: false },
+            subtotals: SubtotalConfig { grand_total: true, row_subtotals: false, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -1164,7 +1182,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef::new("Region")],
             values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { grand_total: false, row_subtotals: false, column_totals: false },
+            subtotals: SubtotalConfig { grand_total: false, row_subtotals: false, column_totals: false, ..Default::default() },
             footer_bands: vec![
                 crate::spec::FooterBandSpec::grand_total(),
                 crate::spec::FooterBandSpec::average(),
@@ -1288,7 +1306,7 @@ mod tests {
         let spec = PivotSpec {
             rows: vec![FieldRef { name: "region".into() }, FieldRef { name: "dept".into() }],
             values: vec![ValueField { field: FieldRef { name: "amt".into() }, aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false, ..Default::default() },
             ..Default::default()
         };
         let m = compute(&t, &spec);
@@ -1317,7 +1335,7 @@ mod tests {
             rows: vec![FieldRef { name: "region".into() }],
             columns: vec![FieldRef { name: "year".into() }],
             values: vec![ValueField { field: FieldRef { name: "sales".into() }, aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: true },
+            subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: true, ..Default::default() },
             footer_bands: vec![crate::spec::FooterBandSpec::grand_total()],
             ..Default::default()
         };
@@ -1356,7 +1374,7 @@ mod tests {
             rows: vec![FieldRef::new("product")],
             columns: vec![FieldRef::new("region"), FieldRef::new("quarter")],
             values: vec![ValueField { field: FieldRef::new("sales"), aggregate: Aggregate::Sum, display_name: None }],
-            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false },
+            subtotals: SubtotalConfig { row_subtotals: false, grand_total: false, column_totals: false, ..Default::default() },
             column_subtotals: vec![true, false], // subtotal per region
             output_language: crate::spec::OutputLanguage::En,
             ..Default::default()
@@ -1376,6 +1394,40 @@ mod tests {
         // B has only East data; East subtotal=5.
         let pb = b.iter().find(|r| r.first().map(|s| s == "B").unwrap_or(false)).expect("row B");
         assert_eq!(pb, &vec!["B".to_string(), "5".to_string(), "".to_string(), "5".to_string(), "".to_string(), "".to_string(), "".to_string()], "row B: {:?}", pb);
+    }
+
+    #[test]
+    fn custom_subtotal_and_grand_total_labels_are_reflected_in_model() {
+        let t = sample_table();
+        let spec = PivotSpec {
+            rows: vec![FieldRef::new("Region"), FieldRef::new("Product")],
+            columns: vec![FieldRef::new("Product")],
+            values: vec![ValueField { field: FieldRef::new("Sales"), aggregate: Aggregate::Sum, display_name: None }],
+            subtotals: SubtotalConfig {
+                row_subtotals: true,
+                grand_total: true,
+                column_totals: true,
+                row_subtotal_label: Some("{prefix} Jumlah".into()),
+                grand_total_label: Some("Total Keseluruhan (Grand Total)".into()),
+                column_total_label: Some("Jumlah Kolom".into()),
+                column_subtotal_label: None,
+            },
+            ..Default::default()
+        };
+        let m = compute(&t, &spec);
+        // 1. Verify custom Grand Total label
+        let gt = m.footer_bands.iter().find(|b| matches!(b.kind, FooterBandKind::GrandTotal)).expect("grand total band");
+        assert_eq!(gt.cells[0].text, "Total Keseluruhan (Grand Total)");
+        assert_eq!(gt.label, "Total Keseluruhan (Grand Total)");
+
+        // 2. Verify custom row subtotal label template
+        let b = body_text(&m);
+        assert!(b.iter().any(|r| r.first().map(|s| s.as_str()) == Some("East Jumlah")), "missing East Jumlah: {:?}", b);
+        assert!(b.iter().any(|r| r.first().map(|s| s.as_str()) == Some("West Jumlah")), "missing West Jumlah: {:?}", b);
+
+        // 3. Verify custom column total header
+        let h0: Vec<String> = m.header_rows.first().map(|r| r.iter().map(|c| c.text.clone()).collect()).unwrap_or_default();
+        assert!(h0.iter().any(|t| t == "Jumlah Kolom"), "missing custom column total header: {:?}", h0);
     }
 }
 

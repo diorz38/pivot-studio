@@ -106,6 +106,18 @@ pub struct SubtotalConfig {
     /// Show a Total column across all pivot column values (when column fields are configured).
     #[serde(default)]
     pub column_totals: bool,
+    /// Custom template/label for row subtotals (e.g. "{prefix} Subtotal" or "Total {prefix}" or "Subtotal").
+    #[serde(default)]
+    pub row_subtotal_label: Option<String>,
+    /// Custom label for Grand Total (overriding language default e.g. "Grand Total" / "Total Keseluruhan").
+    #[serde(default)]
+    pub grand_total_label: Option<String>,
+    /// Custom label for column totals (overriding default "Total").
+    #[serde(default)]
+    pub column_total_label: Option<String>,
+    /// Custom template/label for column subtotals (e.g. "{prefix} Subtotal").
+    #[serde(default)]
+    pub column_subtotal_label: Option<String>,
 }
 
 /// Configures one footer band in the pivot output (AC3.2). Bands render in order.
@@ -213,11 +225,23 @@ impl PivotSpec {
     /// Resolve effective footer band specs, preserving legacy default behavior.
     pub fn effective_footer_bands(&self) -> Vec<FooterBandSpec> {
         if !self.footer_bands.is_empty() {
-            return self.footer_bands.iter().filter(|b| b.enabled).cloned().collect();
+            return self.footer_bands
+                .iter()
+                .filter(|b| b.enabled)
+                .map(|b| {
+                    let mut b = b.clone();
+                    if matches!(b.kind, crate::model::FooterBandKind::GrandTotal) && b.label.is_none() {
+                        b.label = self.subtotals.grand_total_label.clone();
+                    }
+                    b
+                })
+                .collect();
         }
         let mut out = Vec::new();
         if self.subtotals.grand_total {
-            out.push(FooterBandSpec::grand_total());
+            let mut gt = FooterBandSpec::grand_total();
+            gt.label = self.subtotals.grand_total_label.clone();
+            out.push(gt);
         }
         out.push(FooterBandSpec::notes());
         out

@@ -112,11 +112,7 @@ pub fn extract_table_prefix(name: &str) -> Option<String> {
     }
 
     let lower = trimmed.to_lowercase();
-    let prefix_len = if lower.starts_with("sheet") {
-        Some(5)
-    } else if lower.starts_with("table") {
-        Some(5)
-    } else if lower.starts_with("tabel") {
+    let prefix_len = if lower.starts_with("sheet") || lower.starts_with("table") || lower.starts_with("tabel") {
         Some(5)
     } else if lower.starts_with("lembar") {
         Some(6)
@@ -128,7 +124,7 @@ pub fn extract_table_prefix(name: &str) -> Option<String> {
         let rest = trimmed[len..].trim_start_matches(|c: char| c.is_whitespace() || c == '_' || c == '-').trim();
         if !rest.is_empty() {
             let first_token = rest.split_whitespace().next().unwrap_or(rest);
-            let code = first_token.trim_end_matches(|c: char| c == ':' || c == '-' || c == '_');
+            let code = first_token.trim_end_matches([':', '-', '_']);
             if code.chars().any(|c| c.is_alphanumeric()) {
                 return Some(format!("Table {code}"));
             }
@@ -136,7 +132,7 @@ pub fn extract_table_prefix(name: &str) -> Option<String> {
     }
 
     let first_token = trimmed.split_whitespace().next().unwrap_or(trimmed);
-    let code = first_token.trim_end_matches(|c: char| c == ':' || c == '-' || c == '_');
+    let code = first_token.trim_end_matches([':', '-', '_']);
     if code.starts_with(|c: char| c.is_ascii_digit()) && (code.contains('.') || code.len() <= 5) {
         return Some(format!("Table {code}"));
     }
@@ -147,9 +143,7 @@ pub fn extract_table_prefix(name: &str) -> Option<String> {
 pub fn strip_any_table_prefix(title: &str) -> &str {
     let t = title.trim();
     let lower = t.to_lowercase();
-    let prefix_len = if lower.starts_with("table") {
-        Some(5)
-    } else if lower.starts_with("tabel") {
+    let prefix_len = if lower.starts_with("table") || lower.starts_with("tabel") {
         Some(5)
     } else {
         None
@@ -273,7 +267,7 @@ pub enum DbSource {
 
 fn default_spec() -> PivotSpec {
     PivotSpec {
-        subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false },
+        subtotals: SubtotalConfig { row_subtotals: true, grand_total: true, column_totals: false, ..Default::default() },
         ..Default::default()
     }
 }
@@ -395,7 +389,7 @@ impl PivotApp {
 
     pub fn available_columns(&self) -> Vec<(String, DataType)> {
         let Some(table) = &self.table else { return Vec::new() };
-        if self.uses_multi_source_model() || (self.data_model.exposed_columns.as_ref().map_or(true, |v| v.is_empty()) && self.table.as_ref().is_some_and(|t| t.columns.iter().any(|c| c.name.contains('.')))) {
+        if self.uses_multi_source_model() || (self.data_model.exposed_columns.as_ref().is_none_or(|v| v.is_empty()) && self.table.as_ref().is_some_and(|t| t.columns.iter().any(|c| c.name.contains('.')))) {
             return table.columns.iter().map(|c| (c.name.clone(), c.effective_type())).collect();
         }
         table
@@ -1346,6 +1340,52 @@ impl PivotApp {
         if let Some(b) = self.active_spec_mut().footer_bands.get_mut(idx) {
             b.decimals = decimals;
             self.status = format!("Average decimals set to {}.", decimals.map(|d| d.to_string()).unwrap_or_else(|| "auto".to_string()));
+            self.request_pivot_recompute();
+        }
+    }
+
+    pub fn set_grand_total_label(&mut self, label: Option<String>) {
+        let trimmed = label.and_then(|s| { let t = s.trim().to_string(); if t.is_empty() { None } else { Some(t) } });
+        self.active_spec_mut().subtotals.grand_total_label = trimmed.clone();
+        for b in &mut self.active_spec_mut().footer_bands {
+            if matches!(b.kind, pivot_core::FooterBandKind::GrandTotal) {
+                b.label = trimmed.clone();
+            }
+        }
+        self.status = format!("Grand total text updated{}.", if let Some(l) = &trimmed { format!(": '{l}'") } else { " to auto".to_string() });
+        self.request_pivot_recompute();
+    }
+
+    pub fn set_row_subtotal_label(&mut self, label: Option<String>) {
+        let trimmed = label.and_then(|s| { let t = s.trim().to_string(); if t.is_empty() { None } else { Some(t) } });
+        self.active_spec_mut().subtotals.row_subtotal_label = trimmed.clone();
+        self.status = format!("Row subtotal text updated{}.", if let Some(l) = &trimmed { format!(": '{l}'") } else { " to auto".to_string() });
+        self.request_pivot_recompute();
+    }
+
+    pub fn set_column_total_label(&mut self, label: Option<String>) {
+        let trimmed = label.and_then(|s| { let t = s.trim().to_string(); if t.is_empty() { None } else { Some(t) } });
+        self.active_spec_mut().subtotals.column_total_label = trimmed.clone();
+        self.status = format!("Column total text updated{}.", if let Some(l) = &trimmed { format!(": '{l}'") } else { " to auto".to_string() });
+        self.request_pivot_recompute();
+    }
+
+    pub fn set_column_subtotal_label(&mut self, label: Option<String>) {
+        let trimmed = label.and_then(|s| { let t = s.trim().to_string(); if t.is_empty() { None } else { Some(t) } });
+        self.active_spec_mut().subtotals.column_subtotal_label = trimmed.clone();
+        self.status = format!("Column subtotal text updated{}.", if let Some(l) = &trimmed { format!(": '{l}'") } else { " to auto".to_string() });
+        self.request_pivot_recompute();
+    }
+
+    pub fn set_footer_band_label(&mut self, idx: usize, label: Option<String>) {
+        self.ensure_explicit_footer_bands();
+        let trimmed = label.and_then(|s| { let t = s.trim().to_string(); if t.is_empty() { None } else { Some(t) } });
+        if let Some(b) = self.active_spec_mut().footer_bands.get_mut(idx) {
+            b.label = trimmed.clone();
+            if matches!(b.kind, pivot_core::FooterBandKind::GrandTotal) {
+                self.active_spec_mut().subtotals.grand_total_label = trimmed.clone();
+            }
+            self.status = format!("Footer band label updated{}.", if let Some(l) = &trimmed { format!(": '{l}'") } else { " to auto".to_string() });
             self.request_pivot_recompute();
         }
     }
