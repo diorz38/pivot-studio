@@ -47,7 +47,7 @@ pub enum FileKind {
 
 pub fn load_file(path: &Path, kind: FileKind) -> Result<DataTable> {
     match kind {
-        FileKind::Csv => csv_import::load_csv(path, b',', true, None),
+        FileKind::Csv => csv_import::load_csv_auto(path, true, None),
         FileKind::Tsv => csv_import::load_csv(path, b'\t', true, None),
         FileKind::Xlsx => xlsx_import::load_first_sheet(path),
         FileKind::Dbf => dbf_import::load_dbf(path),

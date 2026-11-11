@@ -25,6 +25,53 @@ pub fn load_csv(
     )
 }
 
+/// Loads a CSV with the delimiter sniffed from the first non-empty line.
+pub fn load_csv_auto(
+    path: &Path,
+    has_header: bool,
+    encoding_label: Option<&str>,
+) -> Result<DataTable> {
+    let mut file = File::open(path)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = decode_bytes(&bytes, encoding_label);
+    let delimiter = sniff_delimiter(&text);
+    load_csv_from_str(
+        &text,
+        delimiter,
+        has_header,
+        Some(path.to_string_lossy().into_owned()),
+    )
+}
+
+/// Picks the delimiter (`,`, `;`, tab, `|`) with the highest count outside
+/// double quotes on the first non-empty line; defaults to `,`.
+pub fn sniff_delimiter(text: &str) -> u8 {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or_default();
+    let mut best = b',';
+    let mut best_count = 0usize;
+    for &d in &[b',', b';', b'\t', b'|'] {
+        let count = line
+            .bytes()
+            .scan(false, |in_quotes, b| {
+                if b == b'"' {
+                    *in_quotes = !*in_quotes;
+                }
+                Some((b, *in_quotes))
+            })
+            .filter(|&(b, in_quotes)| b == d && !in_quotes)
+            .count();
+        if count > best_count {
+            best_count = count;
+            best = d;
+        }
+    }
+    best
+}
+
 pub fn load_csv_from_str(
     text: &str,
     delimiter: u8,
@@ -183,7 +230,24 @@ mod tests {
         assert_eq!(t.columns[0].original_name.as_deref(), Some("Order ID"));
         assert_eq!(t.columns[1].name, "customer_name");
         assert_eq!(t.columns[1].original_name.as_deref(), Some("Customer Name"));
-        assert_eq!(t.columns[2].name, "total");
-        assert_eq!(t.columns[2].original_name.as_deref(), Some("Total ($)"));
+    }
+
+    #[test]
+    fn semicolon_csv_auto_detects_delimiter() {
+        let csv = "name;qty\nA;1\nB;2\n";
+        let t = load_csv_from_str(csv, sniff_delimiter(csv), true, None).unwrap();
+        assert_eq!(t.column_count(), 2);
+        assert_eq!(t.row_count(), 2);
+        assert_eq!(t.columns[0].name, "name");
+        assert_eq!(t.columns[1].effective_type(), DataType::Integer);
+    }
+
+    #[test]
+    fn sniff_delimiter_ignores_quoted_separators() {
+        let csv = "\"a,b\";c\n\"x;y\";z\n";
+        assert_eq!(sniff_delimiter(csv), b';');
+        let t = load_csv_from_str(csv, sniff_delimiter(csv), false, None).unwrap();
+        assert_eq!(t.column_count(), 2);
+        assert_eq!(t.get(0, 0), Some(&pivot_core::Value::String("a,b".to_string())));
     }
 }

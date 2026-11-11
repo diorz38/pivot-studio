@@ -13,6 +13,7 @@ Pivot Studio ingests data from heterogeneous sources (CSV/XLSX/DBF/SQLite; MySQL
 One project can combine several datasets — CSV/TSV, XLSX (per-sheet selection), DBF, and SQLite tables — into a single analysis table:
 
 - **Data Model page** (`View → Source Data`, command id `nav.source`) lists datasets and relations, previews each dataset's schema (normalized column name, preserved original header, type, nullable, sampled rows), picks the **base** dataset, exposes a **projection** (which resolved fields pivots may use), and hosts the relation editor.
+- **CSV delimiter auto-detection**: CSV imports sniff the delimiter (`,`, `;`, tab, `|`) from the first non-empty line (counts outside double quotes), so semicolon-separated files load correctly; TSV stays explicit tab.
 - **Lookup relations** replace a code/id in the base (processed) data with a meaningful label coming from a related table, e.g. `orders.customer_id → customers.id` appending `customers.customer_name`.
   - **Row count and sums of the base data never change**: every base row is kept, no inner-join row filtering, and the relation must not multiply rows.
   - **Duplicate non-null keys in the lookup dataset are rejected** with an actionable error (deduplicate the lookup table or use a unique key) instead of fanning rows out.
